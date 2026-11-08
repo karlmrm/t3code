@@ -2,6 +2,7 @@
 import * as NodeEvents from "node:events";
 import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import type {
   BiStream,
@@ -25,6 +26,7 @@ const requireForIroh = NodeModule.createRequire(import.meta.url);
 const TUNNEL_ALPN = Array.from(Buffer.from("DUMBPIPEV0"));
 const HANDSHAKE = Buffer.from("hello");
 const READ_CHUNK_BYTES = 64 * 1024;
+const ACCEPT_RETRY_MS = 1000;
 
 export interface IrohTunnelOptions {
   /** 32 bytes; the endpoint id, and so the ticket, follows from it. */
@@ -158,16 +160,23 @@ export class IrohTunnels {
   /** Accepts connections until the endpoint closes, forwarding each stream to `target`. */
   serve(target: LoopbackTarget): void {
     void (async () => {
-      for (;;) {
-        const incoming = await this.endpoint.acceptNext();
+      while (!this.closed) {
+        let incoming: Awaited<ReturnType<Endpoint["acceptNext"]>>;
+        try {
+          incoming = await this.endpoint.acceptNext();
+        } catch (cause) {
+          // One failed accept, e.g. during a network change, must not stop the listener.
+          if (this.closed) return;
+          this.onError("iroh failed to accept a connection", cause);
+          await NodeTimersPromises.setTimeout(ACCEPT_RETRY_MS);
+          continue;
+        }
         if (incoming === null) {
           return;
         }
         void this.serveConnection(incoming, target);
       }
-    })().catch((cause) => {
-      if (!this.closed) this.onError("iroh stopped accepting connections", cause);
-    });
+    })();
   }
 
   private async serveConnection(
