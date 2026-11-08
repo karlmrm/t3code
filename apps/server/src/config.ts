@@ -109,12 +109,15 @@ export class ServerConfig extends Context.Service<
     /**
      * iroh settings, absent when unused. `listen` accepts connections by this
      * machine's key (`--iroh`); the relay serves both listening and peer links.
+     * `relayFallback` keeps n0's public relays beside a configured relay, so
+     * iroh moves to them when that relay is down.
      */
     readonly iroh?:
       | {
           readonly listen: boolean;
           readonly relayUrl?: string | undefined;
           readonly relayToken?: Redacted.Redacted<string> | undefined;
+          readonly relayFallback?: boolean | undefined;
         }
       | undefined;
   }

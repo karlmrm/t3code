@@ -10,6 +10,7 @@ import type {
   Endpoint,
   EndpointAddr,
   RecvStream,
+  RelayMap,
   SendStream,
 } from "@number0/iroh";
 
@@ -32,16 +33,35 @@ export interface IrohTunnelOptions {
   /** 32 bytes; the endpoint id, and so the ticket, follows from it. */
   readonly secretKey: Uint8Array;
   readonly listen: boolean;
-  /** A relay to use instead of n0's public relays, or none: direct addresses only. */
-  readonly relay?:
-    | "none"
-    | { readonly url: string; readonly authToken?: string | undefined }
-    | undefined;
+  /** n0's public relays when absent; none: direct addresses only. */
+  readonly relay?: "none" | IrohRelayConfig | undefined;
+}
+
+/** A relay of one's own; with `fallback`, n0's public relays stay beside it. */
+export interface IrohRelayConfig {
+  readonly url: string;
+  readonly authToken?: string | undefined;
+  readonly fallback?: boolean | undefined;
 }
 
 export interface LoopbackTarget {
   readonly host: string;
   readonly port: number;
+}
+
+/**
+ * The configured relay, plus n0's public relays when `fallback` is on. iroh
+ * homes on the relay with the lowest latency and moves when it fails, so a
+ * nearby relay of one's own carries the traffic while it is up. A peer is
+ * reached through its home relay, so every peer needs the token.
+ */
+export function relayMap(iroh: IrohModule, relay: IrohRelayConfig): RelayMap {
+  const map = relay.fallback ? iroh.RelayMode.defaultMode().relayMap() : iroh.RelayMap.empty();
+  map.insert({
+    url: relay.url,
+    ...(relay.authToken === undefined ? {} : { authToken: relay.authToken }),
+  });
+  return map;
 }
 
 async function pumpStreamToSocket(recv: RecvStream, socket: NodeNet.Socket): Promise<void> {
@@ -115,16 +135,7 @@ export class IrohTunnels {
       options.relay === "none"
         ? iroh.RelayMode.disabled()
         : options.relay
-          ? (() => {
-              const map = iroh.RelayMap.empty();
-              map.insert({
-                url: options.relay.url,
-                ...(options.relay.authToken === undefined
-                  ? {}
-                  : { authToken: options.relay.authToken }),
-              });
-              return iroh.RelayMode.custom(map);
-            })()
+          ? iroh.RelayMode.custom(relayMap(iroh, options.relay))
           : undefined;
     const endpoint = await iroh.Endpoint.bind(
       {
