@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Pipes raw sockets to iroh's QUIC streams.
 import * as NodeEvents from "node:events";
+import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 
 import type {
@@ -12,6 +13,9 @@ import type {
 } from "@number0/iroh";
 
 type IrohModule = typeof import("@number0/iroh");
+
+// The native binding stays external; single-executables require disk packages instead of importing them.
+const requireForIroh = NodeModule.createRequire(import.meta.url);
 
 /**
  * dumbpipe's protocol, so its `connect-tcp` can reach a listening server
@@ -104,7 +108,7 @@ export class IrohTunnels {
     onError: (message: string, cause: unknown) => void,
   ): Promise<IrohTunnels> {
     // Loaded on first use, so a platform without the native binding only loses iroh.
-    const iroh = await import("@number0/iroh");
+    const iroh = requireForIroh("@number0/iroh") as IrohModule;
     const relayMode =
       options.relay === "none"
         ? iroh.RelayMode.disabled()
