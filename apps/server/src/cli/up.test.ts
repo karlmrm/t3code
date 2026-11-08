@@ -26,32 +26,38 @@ it.each([
   {
     label: "a new machine starts from T3 Connect and asks",
     setup: { installed: false, connect: false, lan: false },
-    flags: { connect: none, lan: none },
+    flags: { connect: none, lan: none, iroh: none },
     expected: { routes: { connect: true, lan: false }, ask: ["connect", "lan"] },
   },
   {
     label: "a build without T3 Connect never offers it",
     setup: { installed: false, connect: null, lan: false },
-    flags: { connect: none, lan: none },
+    flags: { connect: none, lan: none, iroh: none },
     expected: { routes: { connect: false, lan: false }, ask: ["lan"] },
   },
   {
     label: "a rerun starts from the current setup",
     setup: { installed: true, connect: false, lan: true },
-    flags: { connect: none, lan: none },
+    flags: { connect: none, lan: none, iroh: none },
     expected: { routes: { connect: false, lan: true }, ask: ["connect", "lan"] },
   },
   {
     label: "a route flag on a new machine turns on only that route",
     setup: { installed: false, connect: false, lan: false },
-    flags: { connect: none, lan: Option.some(true) },
+    flags: { connect: none, lan: Option.some(true), iroh: none },
     expected: { routes: { connect: false, lan: true }, ask: [] },
   },
   {
     label: "a route flag asks nothing and keeps the other route",
     setup: { installed: true, connect: true, lan: true },
-    flags: { connect: none, lan: Option.some(false) },
+    flags: { connect: none, lan: Option.some(false), iroh: none },
     expected: { routes: { connect: true, lan: false }, ask: [] },
+  },
+  {
+    label: "--iroh alone asks nothing and keeps both routes",
+    setup: { installed: false, connect: false, lan: false },
+    flags: { connect: none, lan: none, iroh: Option.some(true) },
+    expected: { routes: { connect: false, lan: false }, ask: [] },
   },
 ])("$label", ({ setup, flags, expected }) => {
   expect(planRoutes(setup, flags)).toEqual(expected);

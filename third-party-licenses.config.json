@@ -841,6 +841,86 @@
       "name": "iobuffer",
       "license": "MIT",
       "sourceUrl": "https://github.com/image-js/iobuffer"
+    },
+    {
+      "name": "@number0/iroh",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-darwin-arm64",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-linux-arm64-gnu",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-linux-arm64-musl",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-linux-x64-gnu",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-linux-x64-musl",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-win32-arm64-msvc",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
+    },
+    {
+      "name": "@number0/iroh-win32-x64-msvc",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/n0-computer/iroh-ffi",
+      "generatedNotices": [
+        { "licenseId": "MIT", "copyrights": ["Copyright 2025 N0, INC."] },
+        { "licenseId": "Apache-2.0" }
+      ]
     }
   ]
 }

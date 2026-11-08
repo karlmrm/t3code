@@ -367,11 +367,11 @@ fails with that reason.
 ### Link a machine over iroh
 
 A machine behind NAT, with no VPN and no open port, can still be linked by its
-key over [iroh](https://iroh.computer). On that machine, start the server with
-iroh (or set `T3CODE_IROH=1` in the service's `service.env`):
+key over [iroh](https://iroh.computer). On that machine, turn iroh on for the
+background service, or start a server with it:
 
 ```bash
-t3 serve --iroh
+t3 up --iroh     # or: t3 serve --iroh
 t3 status        # prints `t3 environment link iroh:<ticket>`
 ```
 

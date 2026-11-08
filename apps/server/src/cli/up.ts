@@ -112,14 +112,18 @@ const readSetup = Effect.fn("cli.up.read_setup")(function* () {
 
 /**
  * The routes `t3 up` starts from. With no route flag it asks about every
- * route, starting a machine with no service from T3 Connect. Any route flag
- * means it asks nothing and keeps the routes not named as they are.
+ * route, starting a machine with no service from T3 Connect. Any route flag,
+ * `--iroh` included, means it asks nothing and keeps the routes not named as they are.
  */
 export const planRoutes = (
   setup: { readonly installed: boolean; readonly connect: boolean | null; readonly lan: boolean },
-  flags: { readonly connect: Option.Option<boolean>; readonly lan: Option.Option<boolean> },
+  flags: {
+    readonly connect: Option.Option<boolean>;
+    readonly lan: Option.Option<boolean>;
+    readonly iroh: Option.Option<boolean>;
+  },
 ) => {
-  const ask = Option.isNone(flags.connect) && Option.isNone(flags.lan);
+  const ask = Option.isNone(flags.connect) && Option.isNone(flags.lan) && Option.isNone(flags.iroh);
   const start = {
     connect: setup.connect === true || (ask && !setup.installed && setup.connect !== null),
     lan: setup.lan,
@@ -211,13 +215,19 @@ const formatSetup = (setup: Setup) => {
   ].join("\n");
 };
 
-const formatNextSteps = (routes: Routes, serviceInstalled: boolean, pairCommand: string) =>
+const formatNextSteps = (
+  routes: Routes,
+  serviceInstalled: boolean,
+  pairCommand: string,
+  iroh: boolean,
+) =>
   [
     ...(routes.connect
       ? ["On your other device, sign in to T3 Connect with the same account."]
       : []),
     ...(routes.lan ? [`Run \`${pairCommand}\`. Use the code on your other device.`] : []),
-    ...(routes.connect || routes.lan
+    ...(iroh ? ["Link from another machine with the iroh address `t3 status` prints."] : []),
+    ...(routes.connect || routes.lan || iroh
       ? []
       : [
           serviceInstalled
@@ -232,6 +242,7 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
   readonly baseDir: Option.Option<string>;
   readonly connect: Option.Option<boolean>;
   readonly lan: Option.Option<boolean>;
+  readonly iroh: Option.Option<boolean>;
   readonly yes: boolean;
   readonly headless: boolean;
 }) {
@@ -292,19 +303,21 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
     });
   }
   if (routes.connect && !current.connect) yield* requireConnectAllowed;
-  if (routes.lan && !current.lan) {
+  const iroh = Option.getOrElse(flags.iroh, () => before.iroh);
+  if ((routes.lan && !current.lan) || (iroh && !before.iroh)) {
     const policy = yield* ManagedPolicy.ManagedPolicy;
     if (!ManagedLimits.allowsRemoteClients(policy)) {
       return yield* ManagedLimits.refuseRemoteClients(policy);
     }
   }
   // Nothing to run in the background, but a route left on still gets turned off.
-  if (!before.service.installed && !routes.connect && !routes.lan) {
+  if (!before.service.installed && !routes.connect && !routes.lan && !iroh) {
     if (current.connect || before.connectRevoked) {
       yield* disconnectCloud({ clearAuthorization: false });
     }
     if (current.lan) yield* CliService.writeServiceEnv(baseDir, { T3CODE_LAN: "false" });
-    return yield* Console.log(formatNextSteps(routes, false, pairCommand));
+    if (before.iroh) yield* CliService.writeServiceEnv(baseDir, { T3CODE_IROH: "false" });
+    return yield* Console.log(formatNextSteps(routes, false, pairCommand, false));
   }
   const { installedVersion } = before.service;
   const newer =
@@ -318,7 +331,7 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
   const restart =
     before.service.installed &&
     (before.service.current || newer) &&
-    (needsRestart(current, routes) || stopped);
+    (needsRestart(current, routes) || iroh !== before.iroh || stopped);
   // An older or broken service is reinstalled, which restarts it too.
   const update = before.service.installed && !before.service.current && !newer && !stopped;
   if ((restart || update) && interactive && !stopped) {
@@ -348,15 +361,21 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
     !routes.connect && (current.connect || before.connectRevoked)
       ? (yield* disconnectCloud({ clearAuthorization: false })).status === "failed"
       : false;
-  const previousLan = (yield* CliService.readServiceEnv(baseDir)).entries.T3CODE_LAN;
+  const previousEnv = (yield* CliService.readServiceEnv(baseDir)).entries;
   // Also with no service manager: the file records the choice that `t3 status` shows.
-  yield* CliService.writeServiceEnv(baseDir, { T3CODE_LAN: String(routes.lan) });
+  yield* CliService.writeServiceEnv(baseDir, {
+    T3CODE_LAN: String(routes.lan),
+    ...(iroh === before.iroh ? {} : { T3CODE_IROH: String(iroh) }),
+  });
   // When the service step fails, an installed service still runs with the old
   // value, so the file goes back to match it.
   // A new T3 Connect link is undone too, with any tunnel the failed start saved, so a
   // rerun sees it as a change and restarts. The sign-in stays.
   const restoreServiceEnv = before.service.installed
-    ? CliService.writeServiceEnv(baseDir, { T3CODE_LAN: previousLan }).pipe(
+    ? CliService.writeServiceEnv(baseDir, {
+        T3CODE_LAN: previousEnv.T3CODE_LAN,
+        T3CODE_IROH: previousEnv.T3CODE_IROH,
+      }).pipe(
         Effect.andThen(
           !routes.connect || current.connect
             ? Effect.void
@@ -463,6 +482,7 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
       { connect: after.connect === true, lan: after.lan },
       after.service.installed,
       pairCommand,
+      after.iroh,
     )}`,
   );
 });
@@ -478,6 +498,12 @@ export const upCommand = Command.make("up", {
   lan: Flag.Boolean("lan").pipe(
     Flag.withDescription(
       "Allow LAN and tailnet connections. Anyone there can reach the port; a pairing code is the only lock. Turn off with --no-lan.",
+    ),
+    Flag.optional,
+  ),
+  iroh: Flag.Boolean("iroh").pipe(
+    Flag.withDescription(
+      "Accept connections over iroh, by this machine's key, with no open port. Turn off with --no-iroh.",
     ),
     Flag.optional,
   ),
@@ -498,6 +524,7 @@ export const upCommand = Command.make("up", {
     { command: "t3 up --connect", description: "Turn on T3 Connect. Keep other settings." },
     { command: "t3 up --lan", description: "Allow LAN access with pairing codes." },
     { command: "t3 up --no-lan", description: "Stop LAN access." },
+    { command: "t3 up --iroh", description: "Accept connections over iroh." },
     { command: "t3 up --yes", description: "Take the defaults with no questions." },
     { command: "t3 status --json", description: "Read the settings from a script." },
   ]),
@@ -512,7 +539,13 @@ export const connectCommand = Command.make("connect", {
   Command.withHandler((flags) =>
     runCloudCommand(
       flags,
-      setUp({ ...flags, connect: Option.some(true), lan: Option.none(), yes: false }),
+      setUp({
+        ...flags,
+        connect: Option.some(true),
+        lan: Option.none(),
+        iroh: Option.none(),
+        yes: false,
+      }),
       { quietLogs: true },
     ),
   ),
