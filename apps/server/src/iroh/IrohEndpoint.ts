@@ -86,6 +86,7 @@ const make = Effect.fnUntraced(function* (options: { readonly dialOnly: boolean 
                   : {
                       url: relayUrl,
                       authToken: relayToken === undefined ? undefined : Redacted.value(relayToken),
+                      fallback: config.iroh?.relayFallback ?? true,
                     },
             },
             (message, cause) => runFork(Effect.logWarning(message, { cause })),
