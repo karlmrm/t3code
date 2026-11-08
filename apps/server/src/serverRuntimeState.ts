@@ -22,6 +22,8 @@ export const PersistedServerRuntimeState = Schema.Struct({
   startedAt: Schema.String,
   serviceManaged: Schema.optional(Schema.Boolean),
   serverVersion: Schema.optional(Schema.String),
+  // Present while the server accepts connections over iroh (`--iroh`).
+  iroh: Schema.optional(Schema.Struct({ endpointId: Schema.String, ticket: Schema.String })),
   // The managed policy this server loaded at startup, null for none; absent from older servers.
   managedPolicy: Schema.optional(
     Schema.NullOr(

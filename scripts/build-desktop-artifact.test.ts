@@ -638,6 +638,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@ff-labs/fff-bin-linux-x64-musl": "0.9.4",
       },
     );
+
+    // iroh's binaries come along for the target; it ships none for Intel macOS.
+    assert.deepStrictEqual(
+      resolveMergedStageDependencies({
+        platform: "mac",
+        serverDependencies: { "@ff-labs/fff-node": "0.9.4", "@number0/iroh": "1.2.0" },
+        desktopDependencies: {},
+        arch: "universal",
+        fffNodeVersion: "0.9.4",
+      }),
+      {
+        "@ff-labs/fff-node": "0.9.4",
+        "@number0/iroh": "1.2.0",
+        "@ff-labs/fff-bin-darwin-arm64": "0.9.4",
+        "@ff-labs/fff-bin-darwin-x64": "0.9.4",
+        "@number0/iroh-darwin-arm64": "1.2.0",
+      },
+    );
   });
 
   it.effect("ships Cursor platform assets outside asar for spawning and native loading", () =>

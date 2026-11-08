@@ -14,6 +14,8 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "koffi",
   "@koromix/",
   "@napi-rs/keyring",
+  // iroh's napi loader resolves a per-platform binary package at runtime.
+  "@number0/",
   "@clerk/electron-passkeys",
   "node-gyp-build",
   "node-addon-api",

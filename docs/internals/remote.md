@@ -103,6 +103,16 @@ Unlinking on the linking side only forgets the token.
   [`linkRequestTarget`](../../packages/client-runtime/src/linkRequest.ts) names
   a machine for it only when the client already reaches exactly one machine
   there. An address alone never moves an unexpired link to another address.
+- **An `iroh:<ticket>` address is stored as given and reached through a local
+  forward** ([IrohEndpoint](../../apps/server/src/iroh/IrohEndpoint.ts)), so
+  requests go to a loopback origin whose port changes per process. The ticket
+  names the peer's key, and the descriptor check above still applies to what
+  answers. A listening server (`--iroh`) forwards each stream to its own
+  loopback port, as Tailscale Serve does, so the policy that refuses remote
+  clients also refuses iroh. The wire format is dumbpipe's, so its
+  `connect-tcp` can reach a listening server too. CLI commands dial with a
+  fresh key: announcing the server's key from a short-lived process would point
+  its peers at that process.
 - **All callers on one side share the link's single session on the other**,
   so idempotency keys are hashed with the caller's namespace before they
   leave. Without that, two agents reusing a key would collide on the far side.

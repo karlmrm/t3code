@@ -27,6 +27,7 @@ import {
 } from "effect/http";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as IrohEndpoint from "../iroh/IrohEndpoint.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
@@ -87,8 +88,9 @@ const serveB = (descriptor: ExecutionEnvironmentDescriptor) =>
 const makeA = (
   descriptor: ExecutionEnvironmentDescriptor,
   secrets?: typeof ServerSecretStore.layer,
+  iroh?: Layer.Layer<IrohEndpoint.IrohEndpoint>,
 ) =>
-  layerLinkingEnvironment(descriptor, secrets).pipe(
+  layerLinkingEnvironment(descriptor, secrets, undefined, iroh).pipe(
     Layer.build,
     Effect.map((context) => ({
       links: Context.get(context, PeerLinks.PeerLinks),
@@ -387,6 +389,32 @@ it.effect("never sends a link's token to an address that stops answering as that
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["unreachable"]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "links by iroh ticket, keeping the ticket and checking its forward like any address",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveB(box);
+        const a = yield* makeA(laptop, undefined, IrohEndpoint.layerTest({ "box-ticket": b.url }));
+        const pairing = yield* b.auth.issuePairingCredential();
+        const linked = yield* a.links.link({
+          url: "iroh://box-ticket",
+          pairingCode: pairing.credential,
+          access: "auto",
+        });
+        // The ticket is stored, not the forward's port, which changes with each process.
+        expect(linked.urls).toEqual(["iroh:box-ticket"]);
+        expect(yield* probe(a)).toEqual({ caller: "T3 Code · Laptop", modes: "auto/default" });
+
+        yield* Ref.set(b.descriptor, descriptorOf("environment-impostor", "Impostor"));
+        yield* Ref.set(b.bearers, []);
+        const failed = yield* probe(a).pipe(Effect.flip);
+        expect(failed.message).toContain("Box did not answer");
+        expect(yield* Ref.get(b.bearers)).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("cancelling a descriptor probe aborts its request and leaves later resolves fresh", () =>

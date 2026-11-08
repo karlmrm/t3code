@@ -17,6 +17,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as IrohEndpoint from "../iroh/IrohEndpoint.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { authLocationFlags, type CliAuthLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
@@ -40,6 +41,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
             ServerSecretStore.layer,
             SqlitePersistence.layerConfig,
             FetchHttpClient.layer,
+            IrohEndpoint.layerDialOnly.pipe(Layer.provide(ServerSecretStore.layer)),
           ),
         ),
         Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
@@ -86,7 +88,7 @@ const environmentLinkCommand = Command.make("link", {
   ...authLocationFlags,
   url: Argument.String("url").pipe(
     Argument.withDescription(
-      "Where the other environment answers: its T3 Connect, Tailscale, LAN or loopback address.",
+      "Where the other environment answers: its T3 Connect, Tailscale, LAN or loopback address, or iroh:<ticket> from `t3 serve --iroh` there.",
     ),
   ),
   alternateUrl: Flag.String("url").pipe(

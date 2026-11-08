@@ -214,6 +214,8 @@ export const checkServerReachability = Effect.fn("managedLimits.checkServerReach
       readonly authPolicy: ServerAuthPolicy;
       readonly host: string | undefined;
       readonly tailscaleServeEnabled: boolean;
+      /** iroh reaches the server over loopback, so remote clients would pass as local. */
+      readonly irohEnabled?: boolean | undefined;
       /** The background service chose `host` to reach private networks; the user did not. */
       readonly privateNetworkOnly?: boolean | undefined;
     },
@@ -233,6 +235,9 @@ export const checkServerReachability = Effect.fn("managedLimits.checkServerReach
     if (allowsRemoteClients(policy)) return input.host ?? "127.0.0.1";
     if (input.tailscaleServeEnabled) {
       return yield* refuseRemoteClients(policy, "so Tailscale Serve cannot be turned on");
+    }
+    if (input.irohEnabled === true) {
+      return yield* refuseRemoteClients(policy, "so iroh cannot be turned on");
     }
     return loopbackBindAddress(input.host) ?? (yield* cannotListen());
   },
