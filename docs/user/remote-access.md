@@ -383,12 +383,11 @@ The ticket names the machine's key, which stays the same across restarts, so the
 link keeps working when its network changes. Traffic is encrypted end to end
 and goes direct when the networks allow, otherwise through a relay. By default
 that is one of n0's public relays. To use your own, set `T3CODE_IROH_RELAY_URL`
-and `T3CODE_IROH_RELAY_TOKEN` on every machine. n0's relays stay as a fallback:
-iroh uses the relay with the lowest latency and moves to another when it goes
-down, so a nearby relay of your own carries the traffic while it is up. Set
-`T3CODE_IROH_RELAY_FALLBACK=false` to use only your own. Each machine is
-reached through its current relay, so every machine needs the token. A pairing
-code is still required.
+and `T3CODE_IROH_RELAY_TOKEN` on every machine. Your relay is then the only one
+while it answers; when its `/ping` stops answering, n0's relays are added until
+it answers again. Set `T3CODE_IROH_RELAY_FALLBACK=false` to never use n0's
+relays. Each machine is reached through its current relay, so every machine
+needs the token. A pairing code is still required.
 
 ## Manage or revoke access
 
