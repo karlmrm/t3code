@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Pipes raw sockets to iroh's QUIC streams.
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off -- Pipes raw sockets to iroh's QUIC streams and pings the relay, outside Effect.
 import * as NodeEvents from "node:events";
 import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
@@ -10,6 +10,7 @@ import type {
   Endpoint,
   EndpointAddr,
   RecvStream,
+  RelayConfig,
   RelayMap,
   SendStream,
 } from "@number0/iroh";
@@ -28,6 +29,8 @@ const TUNNEL_ALPN = Array.from(Buffer.from("DUMBPIPEV0"));
 const HANDSHAKE = Buffer.from("hello");
 const READ_CHUNK_BYTES = 64 * 1024;
 const ACCEPT_RETRY_MS = 1000;
+const RELAY_CHECK_MS = 15_000;
+const RELAY_PING_TIMEOUT_MS = 5000;
 
 export interface IrohTunnelOptions {
   /** 32 bytes; the endpoint id, and so the ticket, follows from it. */
@@ -37,7 +40,7 @@ export interface IrohTunnelOptions {
   readonly relay?: "none" | IrohRelayConfig | undefined;
 }
 
-/** A relay of one's own; with `fallback`, n0's public relays stay beside it. */
+/** A relay of one's own; with `fallback`, n0's public relays stand in while it is down. */
 export interface IrohRelayConfig {
   readonly url: string;
   readonly authToken?: string | undefined;
@@ -50,18 +53,39 @@ export interface LoopbackTarget {
 }
 
 /**
- * The configured relay, plus n0's public relays when `fallback` is on. iroh
- * homes on the relay with the lowest latency and moves when it fails, so a
- * nearby relay of one's own carries the traffic while it is up. A peer is
- * reached through its home relay, so every peer needs the token.
+ * The configured relay alone. Given n0's relays as well, iroh would home on
+ * whichever answers fastest, so the configured relay could lose to a public
+ * one while up; n0's relays join only while it is down (`watchRelay`). A peer
+ * is reached through its home relay, so every peer needs the token.
  */
 export function relayMap(iroh: IrohModule, relay: IrohRelayConfig): RelayMap {
-  const map = relay.fallback ? iroh.RelayMode.defaultMode().relayMap() : iroh.RelayMap.empty();
+  const map = iroh.RelayMap.empty();
   map.insert({
     url: relay.url,
     ...(relay.authToken === undefined ? {} : { authToken: relay.authToken }),
   });
   return map;
+}
+
+/** n0's public relays, which stand in while the configured relay is down. */
+export function fallbackRelays(iroh: IrohModule): ReadonlyArray<RelayConfig> {
+  const map = iroh.RelayMode.defaultMode().relayMap();
+  return map.urls().flatMap((url) => {
+    const config = map.get(url);
+    return config === null ? [] : [config];
+  });
+}
+
+/** iroh-relay answers `/ping` with 200 when it serves. */
+async function relayAnswers(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(new URL("/ping", url), {
+      signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function pumpStreamToSocket(recv: RecvStream, socket: NodeNet.Socket): Promise<void> {
@@ -144,7 +168,37 @@ export class IrohTunnels {
       },
       relayMode,
     );
-    return new IrohTunnels(iroh, endpoint, onError);
+    const tunnels = new IrohTunnels(iroh, endpoint, onError);
+    if (typeof options.relay === "object" && options.relay.fallback) {
+      tunnels.watchRelay(options.relay.url);
+    }
+    return tunnels;
+  }
+
+  /**
+   * Adds n0's relays while the configured relay does not answer and removes
+   * them once it does, so iroh homes there again.
+   */
+  private watchRelay(url: string): void {
+    const fallback = fallbackRelays(this.iroh);
+    let onFallback = false;
+    void (async () => {
+      while (!this.closed) {
+        const up = await relayAnswers(url);
+        if (!up && !onFallback) {
+          for (const config of fallback) await this.endpoint.insertRelay(config);
+          onFallback = true;
+          this.onError("iroh relay does not answer; using n0's relays", url);
+        } else if (up && onFallback) {
+          for (const config of fallback) await this.endpoint.removeRelay(config.url);
+          onFallback = false;
+          this.onError("iroh relay answers again; leaving n0's relays", url);
+        }
+        await NodeTimersPromises.setTimeout(RELAY_CHECK_MS);
+      }
+    })().catch((cause) => {
+      if (!this.closed) this.onError("iroh relay watch stopped", cause);
+    });
   }
 
   get endpointId(): string {

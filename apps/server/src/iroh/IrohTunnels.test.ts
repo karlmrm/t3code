@@ -6,7 +6,7 @@ import * as NodeModule from "node:module";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { IrohTunnels, relayMap } from "./IrohTunnels.ts";
+import { fallbackRelays, IrohTunnels, relayMap } from "./IrohTunnels.ts";
 
 const iroh = NodeModule.createRequire(import.meta.url)(
   "@number0/iroh",
@@ -77,15 +77,15 @@ it.live("the endpoint id follows the secret key", () =>
   ),
 );
 
-it("keeps n0's relays beside one's own relay only with fallback", () => {
-  const own = { url: "https://relay.example.com", authToken: "secret" };
+it("homes on one's own relay alone, with n0's relays held back as the fallback", () => {
+  const map = relayMap(iroh, {
+    url: "https://relay.example.com",
+    authToken: "secret",
+    fallback: true,
+  });
+  expect(map.urls()).toEqual(["https://relay.example.com/"]);
+  expect(map.get("https://relay.example.com/")?.authToken).toBe("secret");
+
   const n0 = iroh.RelayMode.defaultMode().relayMap().urls();
-
-  const withFallback = relayMap(iroh, { ...own, fallback: true });
-  expect(withFallback.urls()).toEqual(
-    expect.arrayContaining([...n0, "https://relay.example.com/"]),
-  );
-  expect(withFallback.get("https://relay.example.com/")?.authToken).toBe("secret");
-
-  expect(relayMap(iroh, own).urls()).toEqual(["https://relay.example.com/"]);
+  expect(fallbackRelays(iroh).map((relay) => relay.url)).toEqual(n0);
 });
