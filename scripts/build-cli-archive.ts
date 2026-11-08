@@ -25,6 +25,7 @@ import {
   createStagePatchedDependencies,
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
+  resolveIrohNativeDependencies,
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
@@ -157,9 +158,11 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       hint: "The archive stages fff's platform binary from this version.",
     });
   }
+  const runtimeDependencies = selectCliRuntimeExternalDependencies(serverDependencies);
   const dependencies = {
-    ...selectCliRuntimeExternalDependencies(serverDependencies),
+    ...runtimeDependencies,
     ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
+    ...resolveIrohNativeDependencies(input.platform, input.arch, runtimeDependencies),
   };
   const patchedDependencies = createStagePatchedDependencies(
     workspace.patchedDependencies ?? {},

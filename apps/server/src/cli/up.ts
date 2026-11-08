@@ -16,8 +16,10 @@ import { CLOUD_ENDPOINT_RUNTIME_CONFIG, CLOUD_LINK_REVOKED } from "../cloud/conf
 import { hasCloudPublicConfig } from "../cloud/publicConfig.ts";
 import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
+import { irohRoute } from "../iroh/IrohEndpoint.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import {
   connectSubcommands,
@@ -45,6 +47,10 @@ interface Setup {
   /** An installed service with no T3CODE_LAN keeps the old default: on. */
   readonly lanFromOldDefault: boolean;
   readonly host: string | undefined;
+  /** T3CODE_IROH in service.env. */
+  readonly iroh: boolean;
+  /** The running server's `iroh:` address, when it listens over iroh. */
+  readonly irohAddress: string | undefined;
 }
 
 /**
@@ -68,6 +74,17 @@ const readSetup = Effect.fn("cli.up.read_setup")(function* () {
   const lan = yield* Config.Boolean("T3CODE_LAN")
     .pipe(Config.option)
     .parse(ConfigProvider.fromEnv({ env: entries }));
+  const iroh = yield* Config.Boolean("T3CODE_IROH")
+    .pipe(Config.withDefault(false))
+    .parse(ConfigProvider.fromEnv({ env: entries }));
+  const running = yield* readPersistedServerRuntimeState(
+    (yield* ServerConfig.ServerConfig).serverRuntimeStatePath,
+  ).pipe(Effect.orElseSucceed(() => Option.none()));
+  const irohTicket = Option.flatMap(running, (state) =>
+    state.iroh !== undefined && isProcessAlive(state.pid)
+      ? Option.some(state.iroh.ticket)
+      : Option.none(),
+  );
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const connectRevoked =
     hasCloudPublicConfig && Option.isSome(yield* secrets.get(CLOUD_LINK_REVOKED));
@@ -88,6 +105,8 @@ const readSetup = Effect.fn("cli.up.read_setup")(function* () {
     lan: Option.getOrElse(lan, () => servesThisHome),
     lanFromOldDefault: Option.isNone(lan) && servesThisHome,
     host: entries.T3CODE_HOST,
+    iroh,
+    irohAddress: Option.getOrUndefined(Option.map(irohTicket, irohRoute)),
   } satisfies Setup;
 });
 
@@ -166,8 +185,19 @@ const formatSetup = (setup: Setup) => {
             ? "on · pairing code only"
             : "off",
     ],
+    [
+      "iroh",
+      setup.irohAddress !== undefined
+        ? "on · link with the address below"
+        : setup.iroh
+          ? "on · starts with the service"
+          : "off",
+    ],
   ];
   const notes = [
+    ...(setup.irohAddress === undefined
+      ? []
+      : [`Link from another machine: t3 environment link ${setup.irohAddress}`]),
     ...(setup.host === undefined && setup.lan
       ? ["Anyone on your LAN or tailnet can reach the port. A pairing code is the only lock."]
       : []),
@@ -506,6 +536,7 @@ const setupJson = (setup: Setup) =>
         inheritedDefault: setup.lanFromOldDefault,
         hostOverride: setup.host ?? null,
       },
+      iroh: { enabled: setup.iroh, address: setup.irohAddress ?? null },
     },
     null,
     2,

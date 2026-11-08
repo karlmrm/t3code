@@ -1428,6 +1428,31 @@ export function resolveFffNativeDependencies(
   );
 }
 
+/**
+ * iroh's per-platform binaries, which a cross-platform stage install would
+ * skip as optional. iroh publishes no Intel macOS binary; `--iroh` is off there.
+ */
+export function resolveIrohNativeDependencies(
+  platform: typeof BuildPlatform.Type,
+  arch: typeof BuildArch.Type,
+  runtimeDependencies: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const version = runtimeDependencies["@number0/iroh"];
+  if (version === undefined) return {};
+  const architectures = arch === "universal" ? (["arm64", "x64"] as const) : [arch];
+  const packages =
+    platform === "mac"
+      ? architectures
+          .filter((architecture) => architecture === "arm64")
+          .map((architecture) => `@number0/iroh-darwin-${architecture}`)
+      : platform === "win"
+        ? architectures.map((architecture) => `@number0/iroh-win32-${architecture}-msvc`)
+        : architectures.flatMap((architecture) =>
+            ["gnu", "musl"].map((libc) => `@number0/iroh-linux-${architecture}-${libc}`),
+          );
+  return Object.fromEntries(packages.map((name) => [name, version]));
+}
+
 // macOS and Linux share one app.asar; stage the union of both bundles' external dependencies.
 export function resolveMergedStageDependencies(input: {
   readonly platform: "mac" | "linux";
@@ -1436,10 +1461,12 @@ export function resolveMergedStageDependencies(input: {
   readonly arch: typeof BuildArch.Type;
   readonly fffNodeVersion: string;
 }) {
+  const runtimeDependencies = selectCliRuntimeExternalDependencies(input.serverDependencies);
   return {
-    ...selectCliRuntimeExternalDependencies(input.serverDependencies),
+    ...runtimeDependencies,
     ...input.desktopDependencies,
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
+    ...resolveIrohNativeDependencies(input.platform, input.arch, runtimeDependencies),
   };
 }
 
@@ -3102,6 +3129,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   const sidecarDependencies = {
     ...input.runtimeExternalDependencies,
     ...resolveFffNativeDependencies("win", input.arch, input.fffNodeVersion),
+    ...resolveIrohNativeDependencies("win", input.arch, input.runtimeExternalDependencies),
   };
   const sidecarPatchedDependencies = createStagePatchedDependencies(
     input.patchedDependencies,

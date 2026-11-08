@@ -106,6 +106,17 @@ export class ServerConfig extends Context.Service<
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
+    /**
+     * iroh settings, absent when unused. `listen` accepts connections by this
+     * machine's key (`--iroh`); the relay serves both listening and peer links.
+     */
+    readonly iroh?:
+      | {
+          readonly listen: boolean;
+          readonly relayUrl?: string | undefined;
+          readonly relayToken?: Redacted.Redacted<string> | undefined;
+        }
+      | undefined;
   }
 >()("t3/config/ServerConfig") {
   static readonly layerTest = (

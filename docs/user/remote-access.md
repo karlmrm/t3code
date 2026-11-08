@@ -362,6 +362,29 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+### Link a machine over iroh
+
+A machine behind NAT, with no VPN and no open port, can still be linked by its
+key over [iroh](https://iroh.computer). On that machine, start the server with
+iroh (or set `T3CODE_IROH=1` in the service's `service.env`):
+
+```bash
+t3 serve --iroh
+t3 status        # prints `t3 environment link iroh:<ticket>`
+```
+
+Then link it from this machine with that address and a pairing code from it:
+
+```bash
+t3 environment link iroh:<ticket> --pairing-code <code>
+```
+
+The ticket names the machine's key, which stays the same across restarts, so the
+link keeps working when its network changes. Traffic is encrypted end to end
+and goes direct when the networks allow, otherwise through a relay: n0's public
+relays by default, or your own with `T3CODE_IROH_RELAY_URL` and
+`T3CODE_IROH_RELAY_TOKEN` on both machines. A pairing code is still required.
+
 ## Manage or revoke access
 
 On the host, **Settings → Sharing & access** lets authorized administrators create

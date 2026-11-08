@@ -34,6 +34,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as IrohEndpoint from "../iroh/IrohEndpoint.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const PeerHttpApi = HttpApi.make(EnvironmentHttpApi.identifier)
@@ -47,13 +48,15 @@ const LINK_REDIRECT_URI = "http://127.0.0.1/t3code-peer-link";
  * How long a peer's descriptor may take before a route counts as unreachable.
  * A tailnet or relayed route to a machine that is waking up takes longer.
  */
-const probeTimeout = (origin: string) =>
-  isLocalLoopbackHost(new URL(origin).hostname) ? Duration.seconds(3) : Duration.seconds(10);
+const probeTimeout = (address: string) =>
+  !IrohEndpoint.isIrohRoute(address) && isLocalLoopbackHost(new URL(address).hostname)
+    ? Duration.seconds(3)
+    : Duration.seconds(10);
 
 /** A usable link: where to reach the peer and the token to send there. */
 export interface ResolvedPeerLink {
   readonly link: PeerLink;
-  /** The first address that answered as this peer. */
+  /** The origin to send requests to: the first address that answered, or its local iroh forward. */
   readonly url: string;
   readonly token: string;
 }
@@ -163,6 +166,15 @@ const peerOrigin = (url: string) => {
   return Effect.succeed(parsed.origin);
 };
 
+/**
+ * The address a link stores: an origin, or `iroh:<ticket>`. An iroh address
+ * reaches only the endpoint its ticket names, over an encrypted connection.
+ */
+const peerAddress = (url: string) =>
+  IrohEndpoint.isIrohRoute(url)
+    ? Effect.succeed(IrohEndpoint.irohRoute(IrohEndpoint.irohRouteTicket(url)))
+    : peerOrigin(url);
+
 /** Whether a peer holds a linked agent to its limits and keeps its work within its link. */
 const linkLimitsHold = (peer: { readonly capabilities: ExecutionEnvironmentCapabilities }) =>
   peer.capabilities.mcpModeLimitHeader === true && peer.capabilities.linkFence === true;
@@ -175,6 +187,7 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const iroh = yield* IrohEndpoint.IrohEndpoint;
   const enabled = serverSettings.getSettings.pipe(
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
@@ -197,11 +210,26 @@ const make = Effect.gen(function* () {
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
-  /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
-  const describe = (origin: string) =>
-    clientFor(origin).pipe(
+  /** The origin requests for a stored address go to: itself, or a local forward over iroh. */
+  const reach = (address: string) =>
+    IrohEndpoint.isIrohRoute(address)
+      ? iroh.forward(address).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PeerLinkError({
+                reason: "unreachable",
+                message: `This environment could not open iroh: ${cause.message}`,
+              }),
+          ),
+        )
+      : Effect.succeed(address);
+
+  /** The environment answering at `address`, or nothing when it does not answer as T3 Code. */
+  const describe = (address: string) =>
+    reach(address).pipe(
+      Effect.flatMap(clientFor),
       Effect.flatMap((client) => client.metadata.descriptor()),
-      Effect.timeout(probeTimeout(origin)),
+      Effect.timeout(probeTimeout(address)),
       Effect.option,
     );
 
@@ -364,7 +392,7 @@ const make = Effect.gen(function* () {
       urls,
       (url) =>
         Effect.gen(function* () {
-          const origin = yield* peerOrigin(url);
+          const origin = yield* peerAddress(url);
           return { origin, descriptor: yield* describe(origin) };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
@@ -396,7 +424,7 @@ const make = Effect.gen(function* () {
 
   /** The peer at `url`, with every address checked for credentials first. */
   const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (urls: ReadonlyArray<string>) {
-    const origins = yield* Effect.forEach(urls, peerOrigin);
+    const origins = yield* Effect.forEach(urls, peerAddress);
     const primary = origins[0]!;
     const descriptor = yield* describe(primary);
     if (Option.isNone(descriptor)) {
@@ -436,7 +464,7 @@ const make = Effect.gen(function* () {
         message: `${peer.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
       });
     }
-    const issued = yield* signIn(primary, input, `T3 Code · ${self.label}`);
+    const issued = yield* signIn(yield* reach(primary), input, `T3 Code · ${self.label}`);
     const now = yield* DateTime.now;
     const linked: PeerLink = {
       environmentId: peer.environmentId,
@@ -489,7 +517,7 @@ const make = Effect.gen(function* () {
   });
 
   const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
-    peerOrigin(url).pipe(
+    peerAddress(url).pipe(
       Effect.flatMap(describe),
       Effect.map(Option.map((peer) => ({ environmentId: peer.environmentId, label: peer.label }))),
       Effect.orElseSucceed(() => Option.none()),
@@ -609,7 +637,7 @@ const make = Effect.gen(function* () {
       }
       return {
         link: yield* withLabel(link, label),
-        url: url.value,
+        url: yield* reach(url.value),
         token: new TextDecoder().decode(stored.value),
       };
     },

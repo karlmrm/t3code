@@ -81,6 +81,7 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
+import * as IrohEndpoint from "./iroh/IrohEndpoint.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -207,7 +208,10 @@ import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestS
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
-import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
+import {
+  makePersistedServerRuntimeState,
+  type PersistedServerRuntimeState,
+} from "./serverRuntimeState.ts";
 import { acceptsPrivateNetworkConnection, loopbackUrlHostForAddress } from "./startupAccess.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
@@ -346,6 +350,7 @@ const layerHttpServer = Layer.unwrap(
       authPolicy: EnvironmentAuthPolicy.resolveServerAuthPolicy(config),
       host: config.host,
       tailscaleServeEnabled: config.tailscaleServeEnabled,
+      irohEnabled: config.iroh?.listen,
       privateNetworkOnly: config.privateNetworkOnly,
     });
     yield* ManagedLimits.closeTailscaleServeTo(policy, { host: bindHost, port: config.port });
@@ -815,6 +820,7 @@ const layerMakeRoutes = Layer.mergeAll(
     PeerForwarding.layer.pipe(
       Layer.provideMerge(PeerMcpClient.layer),
       Layer.provideMerge(PeerLinks.layer),
+      Layer.provideMerge(IrohEndpoint.layer),
     ),
   ),
   Layer.provide(
@@ -842,6 +848,8 @@ const layerMakeServer = Layer.unwrap(
     const layerActivation = Layer.succeed(ServerActivation.ServerActivation, awaitActivation);
     const runtimeStateParked = yield* Deferred.make<void>();
     const tailscaleParked = yield* Deferred.make<void>();
+    const irohParked = yield* Deferred.make<void>();
+    const runtimeStatePublished = yield* Deferred.make<PersistedServerRuntimeState>();
     const cloudLinkParked = yield* Deferred.make<void>();
     const routesReady = yield* Deferred.make<void>();
     const layerLauncher = ServiceLauncherClient.layer;
@@ -879,8 +887,39 @@ const layerMakeServer = Layer.unwrap(
               Effect.logWarning("Failed to persist server runtime state", { cause }),
             ),
           );
+        yield* Deferred.succeed(runtimeStatePublished, state);
       }),
     );
+    // Reached over loopback like Tailscale Serve; the ticket names this machine's key.
+    const layerIroh = config.iroh?.listen
+      ? Layer.effectDiscard(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(irohParked, undefined).pipe(Effect.orDie);
+            yield* awaitActivation;
+            const server = yield* HttpServer.HttpServer;
+            const address = server.address;
+            if (typeof address === "string" || !("port" in address)) {
+              return;
+            }
+            const iroh = yield* IrohEndpoint.IrohEndpoint;
+            const listening = yield* iroh.listen({
+              host: loopbackUrlHostForAddress(address).replace(/^\[|\]$/gu, ""),
+              port: address.port,
+            });
+            yield* Effect.logInfo("Accepting connections over iroh", {
+              endpointId: listening.endpointId,
+              address: IrohEndpoint.irohRoute(listening.ticket),
+            });
+            const state = yield* Deferred.await(runtimeStatePublished);
+            yield* ownership.publish({ ...state, iroh: listening });
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Failed to accept connections over iroh", { cause }),
+            ),
+            Effect.forkScoped,
+          ),
+        )
+      : Layer.empty;
     const layerTailscaleServe = config.tailscaleServeEnabled
       ? Layer.effectDiscard(
           Effect.acquireRelease(
@@ -1167,6 +1206,7 @@ const layerMakeServer = Layer.unwrap(
           Deferred.await(cloudLinkParked),
           Deferred.await(routesReady),
           ...(config.tailscaleServeEnabled ? [Deferred.await(tailscaleParked)] : []),
+          ...(config.iroh?.listen ? [Deferred.await(irohParked)] : []),
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid),
@@ -1184,6 +1224,7 @@ const layerMakeServer = Layer.unwrap(
       layerHttpListening,
       layerRuntimeState.pipe(Layer.provide(layerLauncher)),
       layerTailscaleServe,
+      layerIroh.pipe(Layer.provide(IrohEndpoint.layer)),
       layerCloudDesiredLinkReconcile,
       HeapSnapshot.layer,
     );

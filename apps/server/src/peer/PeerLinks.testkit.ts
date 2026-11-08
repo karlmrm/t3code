@@ -25,6 +25,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as IrohEndpoint from "../iroh/IrohEndpoint.ts";
 import * as ServerHttp from "../http.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -161,9 +162,11 @@ export const layerLinkingEnvironment = <E = never>(
     SqlClient.SqlClient,
     E | Layer.Error<typeof Sqlite.layerMemory>
   > = Sqlite.layerMemory,
+  iroh: Layer.Layer<IrohEndpoint.IrohEndpoint> = IrohEndpoint.layerTest(),
 ) =>
   PeerMcpClient.layer.pipe(
     Layer.provideMerge(PeerLinks.layer),
+    Layer.provideMerge(iroh),
     Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
     Layer.provideMerge(database),
     Layer.provide(Layer.mergeAll(secrets, FetchHttpClient.layer)),
