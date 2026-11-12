@@ -356,7 +356,7 @@ function InviteAction({
                 <QRCodeSvg
                   value={invite.url}
                   size={208}
-                  level="M"
+                  level="L"
                   marginSize={2}
                   title="Mesh invite. Scan with the T3 Code app"
                 />
