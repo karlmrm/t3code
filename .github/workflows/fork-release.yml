@@ -288,11 +288,11 @@ jobs:
           shopt -s nullglob
           archives=(t3-*.tar.gz t3-*.zip)
           [[ ${#archives[@]} -gt 0 ]] || { echo "No CLI archives were produced." >&2; exit 1; }
-          sha256sum "${archives[@]}" > SHA256SUMS
           for manifest in *-win-x64.yml; do
             mv "$manifest" "${manifest%-win-x64.yml}.yml"
           done
           rm -f builder-debug.yml
+          sha256sum "${archives[@]}" T3-Code-* > SHA256SUMS
           ls -la
 
       - name: Publish release
