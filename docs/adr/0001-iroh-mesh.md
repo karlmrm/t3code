@@ -41,8 +41,11 @@ this" and "who is this connection" are one fact.
 
 ### Membership: signed records, last writer wins
 
-Each server keeps the whole member list (`mesh_members`, migration 082). A
-record is
+Each server keeps the whole member list in `mesh_members`, next to
+`mesh_meta` and `mesh_invites`. The mesh service creates these tables itself
+(`CREATE TABLE IF NOT EXISTS`) instead of adding a migration: upstream
+migrations are numbered and skipped by the highest recorded id, so a fork
+migration would collide with the next upstream one. A record is
 
 ```
 { v: 1, meshId, id, kind: "server" | "client", label,
@@ -70,6 +73,10 @@ There is no mesh-wide authority and no consensus. Two full members changing
 the same record at the same moment resolve by `rev`. A removed member's
 record stays as a tombstone so stale gossip cannot bring it back; inviting
 the same key again writes a newer record.
+
+A removed member learns of it the next time it asks anyone for a session:
+the refusal (`reason: "removed"`) carries the signed tombstone, which the
+member checks like any record, and then it leaves the mesh on its own.
 
 Full members can invite, change access and remove anyone. Read-only members
 can see the mesh and leave it, nothing else. A member whose read-only access
@@ -106,8 +113,9 @@ The joiner dials the inviter's ticket over iroh and calls the inviter's
 unauthenticated `POST /api/mesh/peer/join` with the code, its own record
 fields and a signature over the code with its key. The inviter spends the
 code, writes the joiner's record signed by itself (access from the invite;
-read-only expiry counts from now), and answers with every record, its relay
-URL and token. A server joins through its local API (`t3 mesh join`, or
+read-only expiry counts from now), and answers with every record. Only a
+joiner with full access also gets the relay URL and token; a read-only
+member uses the n0 relays. A server joins through its local API (`t3 mesh join`, or
 Settings → Mesh → Join); the phone app joins directly through its embedded
 iroh.
 
@@ -202,7 +210,7 @@ mints a short session in-process and calls the running server, like
 
 - No pairing per machine; one invite per new device.
 - Every server stores every member's public record; nothing secret is
-  replicated except the relay token handed to joiners.
+  replicated except the relay token, which only full members receive.
 - The mesh needs the server to listen over iroh. Joining or founding a mesh
   starts listening even without `--iroh`.
 - Upstream changes to auth, the connection catalog and the mobile app can
