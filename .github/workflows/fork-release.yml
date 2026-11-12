@@ -3,10 +3,12 @@ name: Fork release
 # Keeps this fork on upstream's newest stable release and publishes it as
 # `vX.Y.Z-iroh.N`: rebases iroh/main onto upstream's `vX.Y.Z` tag, builds
 # Linux x64 and Windows x64, publishes a GitHub release that the desktop
-# updater reads, and publishes the CLI launcher to npm as @karlmrm/t3.
+# updater reads, and publishes the CLI launcher to npm as @karlrm/t3.
 #
 # Secrets: FORK_PUSH_TOKEN (contents and workflows write, to push the rebased
-# branch and tags) and NPM_TOKEN (publish @karlmrm/t3).
+# branch and tags). npm publishing uses trusted publishing (OIDC), configured
+# for this workflow file on @karlrm/t3, so it needs no npm token. The first
+# version is published by hand, since npm only trusts packages that exist.
 
 on:
   schedule:
@@ -310,16 +312,18 @@ jobs:
           cat > notes.md <<EOF
           T3 Code [v$UPSTREAM_VERSION](https://github.com/pingdotgg/t3code/releases/tag/v$UPSTREAM_VERSION) with the iroh route on top.
 
-          Install the CLI with \`npm i -g @karlmrm/t3\`. Desktop builds are unsigned Linux x64 and Windows x64.
+          Install the CLI with \`npm i -g @karlrm/t3\`. Desktop builds are unsigned Linux x64 and Windows x64.
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "T3 Code ${TAG#v}" --notes-file notes.md --latest "${files[@]}"
 
   publish_npm:
-    name: Publish @karlmrm/t3
+    name: Publish @karlrm/t3
     needs: [plan, build_bundle, release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      id-token: write
     steps:
       - name: Download the npm launcher
         uses: actions/download-artifact@v8
@@ -331,8 +335,13 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish npm-packages/t3.tgz --access public --tag latest
+        run: |
+          set -euo pipefail
+          if ! npm view @karlrm/t3 name >/dev/null 2>&1; then
+            echo "::warning::@karlrm/t3 is not on npm yet. Publish npm-launcher/t3.tgz by hand once, then add this workflow as its trusted publisher."
+            exit 0
+          fi
+          npx -y npm@11 publish npm-packages/t3.tgz --access public --tag latest

@@ -15,7 +15,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
-import { CLI_NPM_PACKAGE_NAME } from "@t3tools/shared/cliRelease";
+import { CLI_NPM_PACKAGE_NAME, CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 
@@ -40,7 +40,11 @@ export function npmLauncherPackageManifest(version: string, databaseMigration: n
     description:
       "T3 Code CLI. Downloads the self-contained executable for this platform from the GitHub Release.",
     license: serverPackageJson.license,
-    repository: serverPackageJson.repository,
+    // npm trusted publishing requires the repository that publishes it.
+    repository: {
+      ...serverPackageJson.repository,
+      url: `https://github.com/${CLI_RELEASE_REPOSITORY}`,
+    },
     bin: { t3: "./bin/t3.mjs" },
     files: ["bin", "dist"],
     engines: { node: ">=20.11" },
