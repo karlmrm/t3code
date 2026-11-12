@@ -1286,6 +1286,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["link peer another machine vps agents work there handoff pairing code"],
   },
   {
+    id: "mesh",
+    title: "Mesh",
+    to: "/settings/connections",
+    targetId: "mesh",
+    searchTerms: [
+      "iroh mesh invite join member qr code read-only access remove leave devices phone",
+    ],
+  },
+  {
     id: "remote-environments",
     title: "Environments",
     to: "/settings/connections",

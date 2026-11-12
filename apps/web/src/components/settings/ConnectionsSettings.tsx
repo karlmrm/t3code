@@ -43,7 +43,9 @@ import { searchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { LinkedEnvironmentsSettings } from "./LinkedEnvironmentsSettings";
+import { MeshSettings } from "./MeshSettings";
 import { usePeerLinkHosts } from "~/state/peerLinks";
+import { useMeshHosts } from "~/state/mesh";
 import { LoadBalancingSettings } from "./LoadBalancingSettings";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { Input } from "../ui/input";
@@ -247,6 +249,7 @@ function ConnectionsSettingsContent({
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
   const peerLinkHosts = usePeerLinkHosts();
+  const meshHosts = useMeshHosts();
   const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
     reportFailure: false,
@@ -1646,6 +1649,14 @@ function ConnectionsSettingsContent({
           key={environment.environmentId}
           environmentId={environment.environmentId}
           environmentLabel={peerLinkHosts.length > 1 ? environment.label : null}
+          isSearchTarget={index === 0}
+        />
+      ))}
+      {meshHosts.map((environment, index) => (
+        <MeshSettings
+          key={environment.environmentId}
+          environmentId={environment.environmentId}
+          environmentLabel={meshHosts.length > 1 ? environment.label : null}
           isSearchTarget={index === 0}
         />
       ))}

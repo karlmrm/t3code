@@ -22,14 +22,18 @@ import {
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
+import {
+  EnvironmentRpcRequestObserver,
+  makeEnvironmentHttpApiGroupClient,
+} from "@t3tools/client-runtime/rpc";
 import {
   AuthStandardClientScopes,
   type DesktopBridge,
   type DesktopEnvironmentBootstrap,
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
-  type EnvironmentId,
+  EnvironmentId,
+  type MeshConnection,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -44,6 +48,7 @@ import { FetchHttpClient } from "effect/http";
 
 import { APP_VERSION } from "../branding";
 import { readDesktopPrimaryBearerToken } from "../environments/primary/desktopAuth";
+import { isLoopbackHostname } from "../environments/primary/target";
 import * as PrimaryEnvironmentHttpLayer from "../environments/primary/httpLayer";
 import {
   readPrimaryEnvironmentTarget,
@@ -623,6 +628,49 @@ export function secondaryRegistrationsToRetainAfterTopologyRead(
   );
 }
 
+/**
+ * The mesh members the local server reaches over iroh. Their origins are
+ * loopback forwards on the server's machine, so only a client on that machine
+ * (the desktop app, or a browser on localhost) can use them.
+ */
+const fetchMeshConnections = Effect.fn("web.connectionPlatform.fetchMeshConnections")(function* (
+  httpBaseUrl: string,
+) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(httpBaseUrl, "mesh");
+  return yield* client
+    .connections({ headers: {} })
+    .pipe(Effect.timeout(MESH_FETCH_TIMEOUT), Effect.provide(PrimaryEnvironmentHttpLayer.layer));
+});
+
+function meshConnectionRegistration(connection: MeshConnection): CachedPlatformRegistration {
+  const connectionId = `mesh:${connection.memberId}`;
+  const environmentId = EnvironmentId.make(connection.environmentId);
+  const expiresAtEpochMs = Date.parse(connection.expiresAt);
+  return {
+    signature: `mesh|${connection.httpBaseUrl}|${connection.wsBaseUrl}|${connection.token}`,
+    registration: new BearerConnectionRegistration({
+      target: new BearerConnectionTarget({
+        environmentId,
+        label: connection.label,
+        connectionId,
+      }),
+      profile: new BearerConnectionProfile({
+        connectionId,
+        environmentId,
+        label: connection.label,
+        httpBaseUrl: connection.httpBaseUrl,
+        wsBaseUrl: connection.wsBaseUrl,
+      }),
+      credential: new BearerConnectionCredential({ token: connection.token }),
+    }),
+    expiresAtEpochMs,
+    refreshAtEpochMs: expiresAtEpochMs - SECONDARY_BEARER_REFRESH_SKEW_MS,
+  };
+}
+
+const MESH_POLL_INTERVAL_MS = 15_000;
+const MESH_FETCH_TIMEOUT = "10 seconds";
+
 const layerPlatformConnectionSource = Layer.effect(
   PlatformConnectionSource.PlatformConnectionSource,
   Effect.gen(function* () {
@@ -633,6 +681,33 @@ const layerPlatformConnectionSource = Layer.effect(
     }
     const cacheRef = yield* Ref.make(new Map<string, CachedPlatformRegistration>());
     const rejectedRef = yield* Ref.make(new Map<string, RejectedSecondaryBootstrap>());
+    const meshRef = yield* Ref.make<{
+      readonly fetchedAtEpochMs: number;
+      readonly entries: ReadonlyArray<CachedPlatformRegistration>;
+    }>({ fetchedAtEpochMs: 0, entries: [] });
+
+    /** Mesh members, asked of the local server every so often and kept in between. */
+    const meshRegistrations = Effect.fn("web.connectionPlatform.meshRegistrations")(function* (
+      primary: PrimaryEnvironmentTarget,
+      nowEpochMs: number,
+    ) {
+      const current = yield* Ref.get(meshRef);
+      const due =
+        nowEpochMs - current.fetchedAtEpochMs >= MESH_POLL_INTERVAL_MS ||
+        current.entries.some(
+          (entry) => entry.refreshAtEpochMs !== undefined && nowEpochMs >= entry.refreshAtEpochMs,
+        );
+      if (!due) return current.entries;
+      const fetched = yield* fetchMeshConnections(primary.target.httpBaseUrl).pipe(Effect.option);
+      // A server outside a mesh, or one that cannot answer now, keeps what was there until it expires.
+      const entries = Option.isSome(fetched)
+        ? fetched.value.connections.map(meshConnectionRegistration)
+        : current.entries.filter(
+            (entry) => entry.expiresAtEpochMs === undefined || nowEpochMs < entry.expiresAtEpochMs,
+          );
+      yield* Ref.set(meshRef, { fetchedAtEpochMs: nowEpochMs, entries });
+      return entries;
+    });
 
     const buildPlatformRegistrations = Effect.gen(function* () {
       const previous = yield* Ref.get(cacheRef);
@@ -776,6 +851,20 @@ const layerPlatformConnectionSource = Layer.effect(
           }
         }
         yield* Ref.set(rejectedRef, nextRejected);
+      }
+
+      if (
+        primaryTopologyRead._tag === "Success" &&
+        primaryTopologyRead.target !== null &&
+        isLoopbackHostname(new URL(primaryTopologyRead.target.target.httpBaseUrl).hostname)
+      ) {
+        const taken = new Set(registrations.map((entry) => entry.target.environmentId));
+        for (const entry of yield* meshRegistrations(primaryTopologyRead.target, nowEpochMs)) {
+          // A machine already connected another way keeps that connection.
+          if (taken.has(entry.registration.target.environmentId)) continue;
+          taken.add(entry.registration.target.environmentId);
+          registrations.push(entry.registration);
+        }
       }
 
       yield* Ref.set(cacheRef, next);
