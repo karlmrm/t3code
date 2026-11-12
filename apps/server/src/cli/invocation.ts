@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 
 import type { ServerInstallation } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { CLI_NPM_PACKAGE_NAME } from "@t3tools/shared/cliRelease";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -52,7 +53,7 @@ export const resolveEntryPath = Effect.gen(function* () {
       .pipe(Effect.flatMap(decodeInstallManifest), Effect.option);
     if (
       Option.isSome(manifest) &&
-      manifest.value.name === "t3" &&
+      manifest.value.name === CLI_NPM_PACKAGE_NAME &&
       manifest.value.version === packageJson.version
     ) {
       return npmLauncher;
@@ -67,7 +68,9 @@ export const resolveServerInstallation = Effect.gen(function* () {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const entry = yield* fs.realPath(yield* resolveEntryPath);
-  const match = /^(.*)\/lib\/node_modules\/t3\/(?:dist\/bin\.mjs|bin\/t3\.mjs)$/.exec(entry);
+  const match = new RegExp(
+    `^(.*)/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/(?:dist/bin\\.mjs|bin/t3\\.mjs)$`,
+  ).exec(entry);
   if (!match) {
     const runner = detectCliRunner(entry);
     return runner === null
@@ -83,11 +86,11 @@ export const resolveServerInstallation = Effect.gen(function* () {
   )
     return null;
 
-  const packageRoot = path.join(prefix, "lib/node_modules/t3");
+  const packageRoot = path.join(prefix, "lib/node_modules", CLI_NPM_PACKAGE_NAME);
   const manifest = yield* fs
     .readFileString(path.join(packageRoot, "package.json"))
     .pipe(Effect.flatMap(decodeInstallManifest));
-  if (manifest.name !== "t3" || !manifest.bin) return null;
+  if (manifest.name !== CLI_NPM_PACKAGE_NAME || !manifest.bin) return null;
   const bin = yield* fs.realPath(path.join(packageRoot, manifest.bin.t3));
   const globalBin = yield* fs.realPath(path.join(prefix, "bin/t3"));
   if (globalBin !== bin || bin !== entry) return null;
@@ -97,7 +100,7 @@ export const resolveServerInstallation = Effect.gen(function* () {
 /** The original package spec is unavailable at startup; infer its channel from the version. */
 function suggestedPackageSpec(version: string): string {
   const channel = /^[^-+]+-(nightly|preview)\./.exec(version)?.[1];
-  return channel === undefined ? "t3" : `t3@${channel}`;
+  return channel === undefined ? CLI_NPM_PACKAGE_NAME : `${CLI_NPM_PACKAGE_NAME}@${channel}`;
 }
 
 function formatCliCommand(input: {

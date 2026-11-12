@@ -15,9 +15,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { CLI_NPM_PACKAGE_NAME } from "@t3tools/shared/cliRelease";
+
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 
-export const NPM_LAUNCHER_PACKAGE_NAME = "t3";
+export const NPM_LAUNCHER_PACKAGE_NAME = CLI_NPM_PACKAGE_NAME;
 
 const encodePackageJson = Schema.encodeEffect(fromJsonStringPretty(Schema.Unknown));
 
@@ -91,8 +93,8 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
     yield* fs.copyFile(readme, path.join(stageDir, "README.md"));
   }
 
-  const packageDir = path.join(input.outputDir, NPM_LAUNCHER_PACKAGE_NAME);
-  const tarball = path.join(input.outputDir, `${NPM_LAUNCHER_PACKAGE_NAME}.tgz`);
+  const packageDir = path.join(input.outputDir, "t3");
+  const tarball = path.join(input.outputDir, "t3.tgz");
   yield* fs.remove(tarball, { force: true });
   const tar = (yield* HostProcess.Platform) === "win32" ? windowsSystemTar() : "tar";
   // npm tarballs root everything under `package/`.

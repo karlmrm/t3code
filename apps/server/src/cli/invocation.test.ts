@@ -41,15 +41,15 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     Effect.gen(function* () {
       const npx = "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs";
       expect(yield* rootCommand({ node: "/usr/bin/node", entry: npx })).toBe(
-        "sudo npx t3 browser setup",
+        "sudo npx @karlmrm/t3 browser setup",
       );
       expect(
         yield* rootCommand({ node: "/home/theo/.nvm/versions/node/v24/bin/node", entry: npx }),
-      ).toBe('sudo env "PATH=$PATH" npx t3 browser setup');
+      ).toBe('sudo env "PATH=$PATH" npx @karlmrm/t3 browser setup');
       expect(
         yield* rootCommand({
           node: "/home/theo/.local/node/bin/node",
-          entry: "/home/theo/.local/lib/node_modules/t3/dist/bin.mjs",
+          entry: "/home/theo/.local/lib/node_modules/@karlmrm/t3/dist/bin.mjs",
           path: yield* pathWithT3,
         }),
       ).toBe('sudo env "PATH=$PATH" t3 browser setup');
@@ -62,7 +62,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
       expect(
         yield* rootCommand({
           node: "/home/theo/.local/node/bin/node",
-          entry: "/home/theo/.local/lib/node_modules/t3/dist/bin.mjs",
+          entry: "/home/theo/.local/lib/node_modules/@karlmrm/t3/dist/bin.mjs",
           path: yield* pathWithT3,
           args,
         }),
@@ -177,7 +177,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
         yield* fs.writeFileString(entry, "");
         yield* fs.writeFileString(
           path.join(path.dirname(entry), "../package.json"),
-          `{"name":"t3","version":"${packageJson.version}","bin":{"t3":"./bin/t3.mjs"}}`,
+          `{"name":"@karlmrm/t3","version":"${packageJson.version}","bin":{"t3":"./bin/t3.mjs"}}`,
         );
         const launchedBy = entry.endsWith("t3.mjs");
         const installation = yield* resolveServerInstallation.pipe(
@@ -200,7 +200,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
+      const packageRoot = path.join(prefix, "lib/node_modules/@karlmrm/t3");
       const entry = path.join(packageRoot, "dist/bin.mjs");
       const globalBin = path.join(prefix, "bin/t3");
       yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
@@ -208,7 +208,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
         path.join(packageRoot, "package.json"),
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        '{"name":"@karlmrm/t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
       );
       const resolve = resolveServerInstallation.pipe(
         Effect.provideService(HostProcess.Arguments, ["node", entry]),
@@ -231,7 +231,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
+      const packageRoot = path.join(prefix, "lib/node_modules/@karlmrm/t3");
       const launcher = path.join(packageRoot, "bin/t3.mjs");
       const executable = path.join(root, ".t3/runtime/versions/1.0.0/t3");
       yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
@@ -253,7 +253,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       ] as const) {
         yield* fs.writeFileString(
           path.join(packageRoot, "package.json"),
-          `{"name":"t3","version":"${version}","bin":{"t3":"./bin/t3.mjs"}}`,
+          `{"name":"@karlmrm/t3","version":"${version}","bin":{"t3":"./bin/t3.mjs"}}`,
         );
         expect(yield* resolve).toEqual(expected);
       }
