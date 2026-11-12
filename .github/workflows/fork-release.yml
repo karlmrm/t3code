@@ -341,4 +341,4 @@ jobs:
             echo "::warning::@karlrm/t3 is not on npm yet. Publish npm-launcher/t3.tgz by hand once, then add this workflow as its trusted publisher."
             exit 0
           fi
-          npx -y npm@11 publish npm-packages/t3.tgz --access public --tag latest
+          npx -y npm@11 publish ./npm-packages/t3.tgz --access public --tag latest
