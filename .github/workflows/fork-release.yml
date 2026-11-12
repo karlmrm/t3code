@@ -1,0 +1,338 @@
+name: Fork release
+
+# Keeps this fork on upstream's newest stable release and publishes it as
+# `vX.Y.Z-iroh.N`: rebases iroh/main onto upstream's `vX.Y.Z` tag, builds
+# Linux x64 and Windows x64, publishes a GitHub release that the desktop
+# updater reads, and publishes the CLI launcher to npm as @karlmrm/t3.
+#
+# Secrets: FORK_PUSH_TOKEN (contents and workflows write, to push the rebased
+# branch and tags) and NPM_TOKEN (publish @karlmrm/t3).
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  push:
+    branches:
+      - iroh/main
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Release even when iroh/main already has a release"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  BRANCH: iroh/main
+  UPSTREAM: https://github.com/pingdotgg/t3code.git
+
+jobs:
+  plan:
+    name: Sync with upstream and pick version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      upstream: ${{ steps.plan.outputs.upstream }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.FORK_PUSH_TOKEN }}
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install: "false"
+
+      - id: plan
+        name: Rebase onto upstream stable and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          upstream="$(npm view t3@latest version)"
+          echo "Upstream stable: $upstream"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags "$UPSTREAM" "refs/tags/v$upstream:refs/tags/v$upstream"
+
+          before="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "v$upstream" HEAD; then
+            echo "Rebasing $BRANCH onto v$upstream"
+            fail() {
+              git rebase --abort || true
+              title="Fork sync: rebase onto v$upstream needs a hand"
+              if [[ -z "$(gh issue list --state open --search "$title in:title" --json number -q '.[].number')" ]]; then
+                gh issue create --title "$title" \
+                  --body "Rebasing \`$BRANCH\` onto upstream \`v$upstream\` stopped on conflicts in: $1. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" || true
+              fi
+              echo "::error::Rebase onto v$upstream conflicts in: $1"
+              exit 1
+            }
+            if ! git rebase "v$upstream"; then
+              while true; do
+                conflicted="$(git diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
+                # The lockfile is regenerated from both sides' package.json files.
+                [[ "$conflicted" == "pnpm-lock.yaml" ]] || fail "${conflicted:-unknown}"
+                git checkout --ours pnpm-lock.yaml
+                vp install --lockfile-only
+                git add pnpm-lock.yaml
+                if GIT_EDITOR=true git rebase --continue; then break; fi
+              done
+            fi
+          fi
+          head="$(git rev-parse HEAD)"
+
+          existing="$(git tag --points-at HEAD -l "v$upstream-iroh.*" | sort -V | tail -1)"
+          if [[ -n "$existing" && "$FORCE" != "true" ]]; then
+            if gh release view "$existing" >/dev/null 2>&1; then
+              echo "$existing is already released from $head."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            tag="$existing"
+            echo "Rebuilding unreleased $tag"
+          else
+            last="$(git tag -l "v$upstream-iroh.*" | sed -E 's/.*-iroh\.//' | sort -n | tail -1)"
+            tag="v$upstream-iroh.$(( ${last:-0} + 1 ))"
+            git tag "$tag" HEAD
+            git push origin "refs/tags/$tag"
+          fi
+          if [[ "$head" != "$before" ]]; then
+            git push --force-with-lease="$BRANCH:$before" origin "HEAD:refs/heads/$BRANCH"
+          fi
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "ref=$head" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $head" >> "$GITHUB_STEP_SUMMARY"
+
+  checks:
+    name: Typecheck and fork tests
+    needs: [plan]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Typecheck
+        run: vp run --filter t3 typecheck
+
+      - name: Test
+        run: >-
+          vp test run
+          apps/server/src/iroh
+          apps/server/src/peer
+          apps/server/src/cli
+          apps/server/src/cloud
+          packages/shared/src/cliRelease.test.ts
+          scripts/build-npm-launcher.test.ts
+
+  build_bundle:
+    name: Build JS bundle
+    needs: [plan]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsudDMuY29kZXMk
+      T3CODE_CLERK_JWT_TEMPLATE: t3-relay
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: hzxSgY2cH10sDU2r
+      T3CODE_RELAY_URL: https://relay.t3.codes
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.plan.outputs.version }}"
+
+      - name: Build JS bundle
+        env:
+          T3CODE_TELEMETRY_CHANNEL: dev
+        run: vp run build:desktop:bundle
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Build the npm launcher
+        run: node scripts/build-npm-launcher.ts --version "${{ needs.plan.outputs.version }}" --output-dir npm-packages
+
+      - name: Upload the npm launcher
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-launcher
+          path: npm-packages/t3.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  desktop_linux_x64:
+    name: Desktop Linux x64
+    needs: [plan, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      ref: ${{ needs.plan.outputs.ref }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: pk_live_Y2xlcmsudDMuY29kZXMk
+      clerk_jwt_template: t3-relay
+      clerk_cli_oauth_client_id: hzxSgY2cH10sDU2r
+      relay_url: https://relay.t3.codes
+      label: Linux x64
+      runner: ubuntu-latest
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+      launch_check: false
+
+  desktop_win_x64:
+    name: Desktop Windows x64
+    needs: [plan, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      ref: ${{ needs.plan.outputs.ref }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: pk_live_Y2xlcmsudDMuY29kZXMk
+      clerk_jwt_template: t3-relay
+      clerk_cli_oauth_client_id: hzxSgY2cH10sDU2r
+      relay_url: https://relay.t3.codes
+      label: Windows x64
+      runner: ubuntu-latest
+      verify_runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: true
+
+  release:
+    name: Publish GitHub release
+    needs: [plan, checks, desktop_linux_x64, desktop_win_x64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Download CLI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Prepare assets
+        run: |
+          set -euo pipefail
+          cd release-assets
+          shopt -s nullglob
+          archives=(t3-*.tar.gz t3-*.zip)
+          [[ ${#archives[@]} -gt 0 ]] || { echo "No CLI archives were produced." >&2; exit 1; }
+          sha256sum "${archives[@]}" > SHA256SUMS
+          for manifest in *-win-x64.yml; do
+            mv "$manifest" "${manifest%-win-x64.yml}.yml"
+          done
+          rm -f builder-debug.yml
+          ls -la
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          UPSTREAM_VERSION: ${{ needs.plan.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-assets/*.AppImage release-assets/*.deb release-assets/*.exe \
+            release-assets/*.zip release-assets/*.tar.gz release-assets/*.blockmap \
+            release-assets/*.yml release-assets/SHA256SUMS)
+          cat > notes.md <<EOF
+          T3 Code [v$UPSTREAM_VERSION](https://github.com/pingdotgg/t3code/releases/tag/v$UPSTREAM_VERSION) with the iroh route on top.
+
+          Install the CLI with \`npm i -g @karlmrm/t3\`. Desktop builds are unsigned Linux x64 and Windows x64.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "T3 Code ${TAG#v}" --notes-file notes.md --latest "${files[@]}"
+
+  publish_npm:
+    name: Publish @karlmrm/t3
+    needs: [plan, build_bundle, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the npm launcher
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-launcher
+          path: npm-packages
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish npm-packages/t3.tgz --access public --tag latest
