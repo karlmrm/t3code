@@ -89,6 +89,22 @@ import {
   RelayEnvironmentMintResponse,
   RelayLinkProofRequest,
 } from "./relay.ts";
+import {
+  MeshConnections,
+  MeshError,
+  MeshForwardConfig,
+  MeshInvite,
+  MeshInviteCreateInput,
+  MeshJoinInput,
+  MeshMemberUpdateInput,
+  MeshPeerJoinRequest,
+  MeshPeerJoinResult,
+  MeshPeerSessionRequest,
+  MeshPeerSessionResult,
+  MeshPeerSyncRequest,
+  MeshPeerSyncResult,
+  MeshState,
+} from "./mesh.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -993,6 +1009,82 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+class EnvironmentMeshHttpApi extends HttpApiGroup.make("mesh")
+  .add(
+    HttpApiEndpoint.get("state", "/api/mesh/state", {
+      headers: OptionalBearerHeaders,
+      success: MeshState,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("createInvite", "/api/mesh/invites", {
+      headers: OptionalBearerHeaders,
+      payload: MeshInviteCreateInput,
+      success: MeshInvite,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("join", "/api/mesh/join", {
+      headers: OptionalBearerHeaders,
+      payload: MeshJoinInput,
+      success: MeshState,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("updateMember", "/api/mesh/members/update", {
+      headers: OptionalBearerHeaders,
+      payload: MeshMemberUpdateInput,
+      success: MeshState,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("leave", "/api/mesh/leave", {
+      headers: OptionalBearerHeaders,
+      success: MeshState,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("connections", "/api/mesh/connections", {
+      headers: OptionalBearerHeaders,
+      success: MeshConnections,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("forwardConfig", "/api/mesh/forward-config", {
+      headers: OptionalBearerHeaders,
+      success: MeshForwardConfig,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("peerJoin", "/api/mesh/peer/join", {
+      payload: MeshPeerJoinRequest,
+      success: MeshPeerJoinResult,
+      error: [MeshError, EnvironmentInternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("peerSession", "/api/mesh/peer/session", {
+      payload: MeshPeerSessionRequest,
+      success: MeshPeerSessionResult,
+      error: [MeshError, EnvironmentInternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("peerSync", "/api/mesh/peer/sync", {
+      headers: OptionalBearerHeaders,
+      payload: MeshPeerSyncRequest,
+      success: MeshPeerSyncResult,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 // Path tokens and optional body signatures authenticate webhooks; read raw bytes to verify signatures.
 const WebhookParams = Schema.Struct({
   hookId: TrimmedNonEmptyString,
@@ -1022,4 +1114,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi)
+  .add(EnvironmentMeshHttpApi) {}

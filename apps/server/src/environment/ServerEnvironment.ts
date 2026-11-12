@@ -288,6 +288,7 @@ export const make = Effect.gen(function* () {
       peerLinks: true,
       mcpModeLimitHeader: true,
       linkFence: true,
+      mesh: true,
       mcpApprovalCodes: true,
       mcpHostedApproval: true,
     },

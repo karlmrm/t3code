@@ -1,3 +1,4 @@
+import { meshCommand } from "./cli/mesh.ts";
 import { doctorCommand } from "./cli/doctor.ts";
 import { policyCommand } from "./cli/policy.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -91,6 +92,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       browserCommand,
       projectCommand,
       threadCommand,
+      meshCommand,
       upCommand,
       statusCommand,
       serviceCommand,

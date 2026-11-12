@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalFetch:off -- Pipes raw sockets to iroh's QUIC streams and pings the relay, outside Effect.
+// @effect-diagnostics nodeBuiltinImport:off globalFetch:off globalTimers:off -- Pipes raw sockets to iroh's QUIC streams and pings the relay, outside Effect.
 import * as NodeEvents from "node:events";
 import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
@@ -31,6 +31,8 @@ const READ_CHUNK_BYTES = 64 * 1024;
 const ACCEPT_RETRY_MS = 1000;
 const RELAY_CHECK_MS = 15_000;
 const RELAY_PING_TIMEOUT_MS = 5000;
+/** A stream that does not open this fast rides a dead path (say, after a network switch). */
+const OPEN_STREAM_TIMEOUT_MS = 6000;
 
 export interface IrohTunnelOptions {
   /** 32 bytes; the endpoint id, and so the ticket, follows from it. */
@@ -134,6 +136,9 @@ async function connectSocket(target: LoopbackTarget): Promise<NodeNet.Socket> {
  */
 export class IrohTunnels {
   private readonly forwards = new Map<string, Promise<NodeNet.Server>>();
+  /** The newest address per forwarded endpoint id; a later ticket updates it. */
+  private readonly peers = new Map<string, EndpointAddr>();
+  private serving = false;
   private closed = false;
   private readonly iroh: IrohModule;
   private readonly endpoint: Endpoint;
@@ -224,6 +229,10 @@ export class IrohTunnels {
 
   /** Accepts connections until the endpoint closes, forwarding each stream to `target`. */
   serve(target: LoopbackTarget): void {
+    if (this.serving) return;
+    this.serving = true;
+    // An endpoint opened only to dial (a peer link) starts listening when a mesh needs it.
+    this.endpoint.setAlpns([TUNNEL_ALPN]);
     void (async () => {
       while (!this.closed) {
         let incoming: Awaited<ReturnType<Endpoint["acceptNext"]>>;
@@ -274,13 +283,20 @@ export class IrohTunnels {
     }
   }
 
-  /** A loopback origin reaching the peer in `ticket`; one forward per ticket, kept until close. */
+  /**
+   * A loopback origin reaching the peer in `ticket`. One forward per endpoint
+   * id, kept until close: a later ticket for the same endpoint only updates the
+   * address new connections dial, so the port stays while addresses change.
+   */
   async forward(ticket: string): Promise<string> {
-    let server = this.forwards.get(ticket);
+    const addr = this.iroh.EndpointTicket.fromString(ticket).endpointAddr();
+    const key = addr.id().toString();
+    this.peers.set(key, addr);
+    let server = this.forwards.get(key);
     if (server === undefined) {
-      server = this.openForward(this.iroh.EndpointTicket.fromString(ticket).endpointAddr());
-      this.forwards.set(ticket, server);
-      server.catch(() => this.forwards.delete(ticket));
+      server = this.openForward(key);
+      this.forwards.set(key, server);
+      server.catch(() => this.forwards.delete(key));
     }
     const address = (await server).address();
     if (address === null || typeof address === "string") {
@@ -289,24 +305,57 @@ export class IrohTunnels {
     return `http://127.0.0.1:${address.port}`;
   }
 
-  private async openForward(peer: EndpointAddr): Promise<NodeNet.Server> {
+  private async openForward(key: string): Promise<NodeNet.Server> {
     let connection: Promise<Connection> | undefined;
     // One QUIC connection per peer, reopened once it closes.
     const connected = (): Promise<Connection> => {
       if (connection === undefined) {
-        connection = this.endpoint.connect(peer, TUNNEL_ALPN);
-        connection.catch(() => (connection = undefined));
+        const peer = this.peers.get(key);
+        if (peer === undefined) return Promise.reject(new Error("unknown iroh peer"));
+        const dialing = this.endpoint.connect(peer, TUNNEL_ALPN);
+        connection = dialing;
+        dialing.catch(() => {
+          if (connection === dialing) connection = undefined;
+        });
       }
-      return connection.then((current) => {
-        if (current.closeReason() === null) return current;
-        connection = undefined;
+      const current = connection;
+      return current.then((open) => {
+        if (open.closeReason() === null) return open;
+        if (connection === current) connection = undefined;
         return connected();
       });
+    };
+    const openStream = async (): Promise<BiStream> => {
+      const current = await connected();
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          current.openBi(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("iroh stream did not open")),
+              OPEN_STREAM_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } catch (cause) {
+        // Drop the connection so the next attempt dials afresh.
+        current.close(0n, Array.from(Buffer.from("stale")));
+        connection = undefined;
+        throw cause;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     };
     const server = NodeNet.createServer((socket) => {
       socket.pause();
       void (async () => {
-        const stream = await (await connected()).openBi();
+        let stream: BiStream;
+        try {
+          stream = await openStream();
+        } catch {
+          stream = await openStream();
+        }
         await stream.send.writeAll(Array.from(HANDSHAKE));
         socket.resume();
         await splice(stream, socket);
@@ -318,6 +367,14 @@ export class IrohTunnels {
     server.listen(0, "127.0.0.1");
     await NodeEvents.EventEmitter.once(server, "listening");
     return server;
+  }
+
+  /** Closes the forward to `endpointId`, if one is open. */
+  async closeForward(endpointId: string): Promise<void> {
+    const server = this.forwards.get(endpointId);
+    this.forwards.delete(endpointId);
+    this.peers.delete(endpointId);
+    if (server !== undefined) (await server.catch(() => undefined))?.close();
   }
 
   async close(): Promise<void> {

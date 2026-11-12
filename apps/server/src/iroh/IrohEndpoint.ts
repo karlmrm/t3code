@@ -11,9 +11,11 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { IrohTunnels, type LoopbackTarget } from "./IrohTunnels.ts";
 
+export type { LoopbackTarget };
+
 /** A peer address that names an iroh ticket instead of a URL: `iroh:<ticket>`. */
 const IROH_ROUTE_PREFIX = "iroh:";
-const SECRET_KEY_NAME = "iroh-secret-key";
+export const SECRET_KEY_NAME = "iroh-secret-key";
 
 export const isIrohRoute = (url: string): boolean =>
   url.trim().toLowerCase().startsWith(IROH_ROUTE_PREFIX);
@@ -47,6 +49,10 @@ export class IrohEndpoint extends Context.Service<
     readonly ticket: Effect.Effect<Option.Option<string>>;
     /** A loopback origin that reaches the peer named by an `iroh:` address. */
     readonly forward: (route: string) => Effect.Effect<string, IrohError>;
+    /** This endpoint's ticket now, with its current addresses; none until it listens. */
+    readonly currentTicket: Effect.Effect<Option.Option<string>>;
+    /** Closes the forward to one endpoint id. */
+    readonly closeForward: (endpointId: string) => Effect.Effect<void>;
   }
 >()("t3/iroh/IrohEndpoint") {}
 
@@ -119,6 +125,24 @@ const make = Effect.fnUntraced(function* (options: { readonly dialOnly: boolean 
       return { endpointId: endpoint.endpointId, ticket: current };
     }),
     ticket: Ref.get(ticket),
+    currentTicket: Effect.gen(function* () {
+      const listening = yield* Ref.get(ticket);
+      const current = yield* Ref.get(opened);
+      if (Option.isNone(listening) || Option.isNone(current)) return listening;
+      const endpoint = current.value;
+      const fresh = yield* Effect.tryPromise({
+        try: () => endpoint.ticket(),
+        catch: (cause) => new IrohError({ operation: "listen", cause }),
+      }).pipe(Effect.timeout("5 seconds"), Effect.option);
+      if (Option.isSome(fresh)) yield* Ref.set(ticket, fresh);
+      return Option.isSome(fresh) ? fresh : listening;
+    }),
+    closeForward: Effect.fn("IrohEndpoint.closeForward")(function* (endpointId) {
+      const current = yield* Ref.get(opened);
+      if (Option.isSome(current)) {
+        yield* Effect.promise(() => current.value.closeForward(endpointId));
+      }
+    }),
     forward: Effect.fn("IrohEndpoint.forward")(function* (route) {
       const endpoint = yield* tunnels;
       return yield* Effect.tryPromise({
@@ -140,6 +164,8 @@ export const layerTest = (origins: Readonly<Record<string, string>> = {}) =>
         return yield* Effect.die(new Error("IrohEndpoint.layerTest does not listen"));
       }),
       ticket: Effect.succeedNone,
+      currentTicket: Effect.succeedNone,
+      closeForward: Effect.fn("IrohEndpoint.closeForward")(function* () {}),
       forward: Effect.fn("IrohEndpoint.forward")(function* (route) {
         const origin = origins[irohRouteTicket(route)];
         if (origin === undefined) {

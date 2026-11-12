@@ -95,6 +95,18 @@ export class PeerLinks extends Context.Service<
     /** Whether the Linked environments beta (Settings → Labs) is on here. */
     readonly enabled: Effect.Effect<boolean>;
     readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLink, PeerLinkError>;
+    /**
+     * Stores a link whose token came another way: a mesh member's session at
+     * another member, granted by key instead of a pairing code.
+     */
+    readonly adopt: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly label: string;
+      readonly urls: ReadonlyArray<string>;
+      readonly access: AuthMcpClientAccess;
+      readonly token: string;
+      readonly expiresAt: DateTime.Utc;
+    }) => Effect.Effect<PeerLink, PeerLinkError>;
     readonly list: Effect.Effect<ReadonlyArray<PeerLinkSummary>, PeerLinkError>;
     /** The stored link, without asking the peer whether it answers. */
     readonly get: (
@@ -205,9 +217,17 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const isOwnLoopback = yield* LoopbackHost;
   const iroh = yield* IrohEndpoint.IrohEndpoint;
+  // A mesh makes its members linked environments, whatever the Labs setting says.
+  const inMesh = sql<{ readonly value: string }>`
+    SELECT value FROM mesh_meta WHERE key = 'mesh_id'
+  `.pipe(
+    Effect.map((rows) => rows.length > 0),
+    Effect.orElseSucceed(() => false),
+  );
   const enabled = serverSettings.getSettings.pipe(
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
+    Effect.flatMap((on) => (on ? Effect.succeed(true) : inMesh)),
   );
 
   /** A fresh name for one link's token; the row records it. */
@@ -541,12 +561,18 @@ const make = Effect.gen(function* () {
       lastReachedAt: now,
       lastError: null,
     };
+    return yield* store(linked, issued.access_token);
+  });
+
+  /** Writes a link and its token, replacing any earlier one for the same peer. */
+  const store = Effect.fn("PeerLinks.store")(function* (linked: PeerLink, token: string) {
+    const origins = linked.urls;
+    const now = linked.linkedAt;
+    const peer = { environmentId: linked.environmentId };
     // The token goes under a name of its own before the row points at it,
     // so the row and its token are replaced together.
     const secretName = yield* newSecretName;
-    yield* secrets
-      .set(secretName, new TextEncoder().encode(issued.access_token))
-      .pipe(Effect.catch(failStorage));
+    yield* secrets.set(secretName, new TextEncoder().encode(token)).pipe(Effect.catch(failStorage));
     // A token no row names could never be removed.
     const previous = yield* Effect.gen(function* () {
       const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
@@ -717,9 +743,27 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause({ log: true }),
     );
 
+  const adopt: PeerLinks["Service"]["adopt"] = Effect.fn("PeerLinks.adopt")(function* (input) {
+    const now = yield* DateTime.now;
+    return yield* store(
+      {
+        environmentId: input.environmentId,
+        label: input.label,
+        urls: [...input.urls],
+        access: input.access,
+        linkedAt: now,
+        expiresAt: input.expiresAt,
+        lastReachedAt: now,
+        lastError: null,
+      },
+      input.token,
+    );
+  });
+
   return PeerLinks.of({
     enabled,
     link,
+    adopt,
     list,
     get,
     unlink,
