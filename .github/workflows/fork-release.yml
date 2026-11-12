@@ -153,15 +153,12 @@ jobs:
       - name: Typecheck
         run: vp run --filter t3 typecheck
 
+      # From each package, since the root config also loads projects this install skips.
       - name: Test
-        run: >-
-          vp test run
-          apps/server/src/iroh
-          apps/server/src/peer
-          apps/server/src/cli
-          apps/server/src/cloud
-          packages/shared/src/cliRelease.test.ts
-          scripts/build-npm-launcher.test.ts
+        run: |
+          (cd apps/server && vp test run src/iroh src/peer src/cli src/cloud)
+          (cd packages/shared && vp test run src/cliRelease.test.ts)
+          (cd scripts && vp test run build-npm-launcher.test.ts)
 
   build_bundle:
     name: Build JS bundle
