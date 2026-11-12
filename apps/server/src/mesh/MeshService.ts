@@ -429,7 +429,12 @@ const make = Effect.gen(function* () {
           next.set(
             id,
             error === null
-              ? { online: true, lastSeenAt: new Date(now).toISOString(), version, error: null }
+              ? {
+                  online: true,
+                  lastSeenAt: new Date(now).toISOString(),
+                  version: version ?? previous.version,
+                  error: null,
+                }
               : { ...previous, online: false, error },
           );
           return next;
@@ -463,21 +468,26 @@ const make = Effect.gen(function* () {
 
   /** Merges records from a peer and acts on what changed. */
   const absorb = (incoming: ReadonlyArray<MeshMemberRecord>) =>
-    lock.withPermits(1)(
-      Effect.gen(function* () {
-        const mesh = yield* requireMesh;
-        const now = yield* Clock.currentTimeMillis;
-        const accepted = mergeRecords(mesh.records, incoming, mesh.meshId, now);
-        for (const record of accepted) yield* saveRecord(record);
-        const self = mesh.records.get(key.id);
-        if (self !== undefined && self.removed) {
-          yield* Effect.logInfo("This machine was removed from the mesh", { by: self.signer });
-          yield* clearMesh;
-          return { accepted, left: true };
-        }
-        return { accepted, left: false };
-      }),
-    );
+    lock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          const mesh = yield* requireMesh;
+          const now = yield* Clock.currentTimeMillis;
+          const accepted = mergeRecords(mesh.records, incoming, mesh.meshId, now);
+          for (const record of accepted) yield* saveRecord(record);
+          const self = mesh.records.get(key.id);
+          if (self !== undefined && self.removed) {
+            yield* Effect.logInfo("This machine was removed from the mesh", { by: self.signer });
+            yield* clearMesh;
+            return { accepted, left: true };
+          }
+          return { accepted, left: false };
+        }),
+      )
+      .pipe(
+        // Changes from a peer (a removal, a new address) act here now, not on the next round.
+        Effect.tap((result) => (result.accepted.length > 0 && !result.left ? signal : Effect.void)),
+      );
 
   // Calls to other members
 
