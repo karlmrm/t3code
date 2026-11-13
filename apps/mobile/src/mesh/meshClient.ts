@@ -30,6 +30,12 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const REFRESH_INTERVAL_MS = 30_000;
 /** After a network change, iroh needs a moment to find the new path. */
 const NETWORK_CHANGE_DELAY_MS = 1500;
+/**
+ * A check that started on the old path can time out after the switch. A second
+ * one after that timeout shows the member online again without waiting for
+ * the next interval.
+ */
+const NETWORK_CHANGE_RECHECK_MS = NETWORK_CHANGE_DELAY_MS + REQUEST_TIMEOUT_MS + 500;
 /** A session is renewed this long before it ends. */
 const SESSION_RENEW_MS = 60 * 60 * 1000;
 
@@ -610,6 +616,7 @@ const startMesh = async () => {
   AppState.addEventListener("change", (state) => (state === "active" ? resume() : pause()));
   irohNative.addListener("onNetworkChange", () => {
     setTimeout(tick, NETWORK_CHANGE_DELAY_MS);
+    setTimeout(tick, NETWORK_CHANGE_RECHECK_MS);
   });
   if (AppState.currentState === "active") resume();
 };

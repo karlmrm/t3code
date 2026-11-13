@@ -29,8 +29,8 @@ const TUNNEL_ALPN = Array.from(Buffer.from("DUMBPIPEV0"));
 const HANDSHAKE = Buffer.from("hello");
 const READ_CHUNK_BYTES = 64 * 1024;
 const ACCEPT_RETRY_MS = 1000;
-const RELAY_CHECK_MS = 5000;
-const RELAY_PING_TIMEOUT_MS = 3000;
+const RELAY_CHECK_MS = 2000;
+const RELAY_PING_TIMEOUT_MS = 2000;
 /** A stream that does not open this fast rides a dead path (say, after a network switch). */
 const OPEN_STREAM_TIMEOUT_MS = 6000;
 

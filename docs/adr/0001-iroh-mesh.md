@@ -222,10 +222,11 @@ Drop the vendored copy once netwatch learns this itself.
 #### Relay outage and dead paths
 
 When the mesh relay goes down, every member swaps it for n0's public relays
-and swaps back once it answers `/ping` again. Server and phone both check
-every five seconds. A server swaps on one failed ping (three-second timeout),
-while the phone waits for two failures in a row, because a single lost ping is
-common on mobile data. The swap removes the dead relay from the map instead of
+and swaps back once it answers `/ping` again. A server checks every two
+seconds and swaps on one failed ping (two-second timeout). Phones redial a
+server through n0 only once the server has swapped, so this bounds their
+outage. The phone checks every five seconds and waits for two failures in a
+row, because a single lost ping is common on mobile data. The swap removes the dead relay from the map instead of
 only adding n0's. iroh picks a new home relay at once only when its home
 leaves the map. Merely adding relays waits for the next net report, about 20
 seconds, and nobody can reach the member during that time.
