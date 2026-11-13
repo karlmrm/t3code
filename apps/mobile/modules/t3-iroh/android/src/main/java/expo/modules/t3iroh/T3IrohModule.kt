@@ -54,9 +54,17 @@ class T3IrohModule : Module() {
 
     AsyncFunction("status") { native { T3IrohNative.nativeStatus() } }
 
-    AsyncFunction("networkChanged") { native { T3IrohNative.nativeNetworkChanged() } }
+    AsyncFunction("networkChanged") {
+      native { T3IrohNative.nativeNetworkChanged(defaultInterface()) }
+    }
 
     OnDestroy { unwatchNetwork() }
+  }
+
+  private fun defaultInterface(): String? {
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return null
+    val network = manager.activeNetwork ?: return null
+    return manager.getLinkProperties(network)?.interfaceName
   }
 
   private fun watchNetwork() {
@@ -73,8 +81,9 @@ class T3IrohModule : Module() {
           val first = current == null
           current = network
           addresses = now
+          val name = properties?.interfaceName ?: manager.getLinkProperties(network)?.interfaceName
+          T3IrohNative.nativeNetworkChanged(name)
           if (first) return
-          T3IrohNative.nativeNetworkChanged()
           sendEvent("onNetworkChange", mapOf("network" to network.toString()))
         }
 
@@ -85,7 +94,7 @@ class T3IrohModule : Module() {
 
         override fun onLost(network: Network) {
           if (network == current) {
-            T3IrohNative.nativeNetworkChanged()
+            T3IrohNative.nativeNetworkChanged(null)
             sendEvent("onNetworkChange", mapOf("network" to null))
           }
         }

@@ -39,3 +39,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-context = "0.1.1"
 paranoid-android = "0.2.2"
+netwatch = "0.19.3"
+
+# netwatch with the Android default interface set from the app: see vendor/netwatch.
+[patch.crates-io]
+netwatch = { path = "vendor/netwatch" }

@@ -23,6 +23,7 @@ const HANDSHAKE: &[u8] = b"hello";
 /// A stream that does not open this fast rides a dead path, say after a network switch.
 const OPEN_STREAM_TIMEOUT: Duration = Duration::from_secs(6);
 const RELAY_CHECK: Duration = Duration::from_secs(15);
+const RELAY_RETRY: Duration = Duration::from_secs(3);
 const RELAY_PING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends iroh's warnings and this crate's info to logcat under the tag `t3-iroh`.
@@ -187,14 +188,29 @@ async fn watch_relay(endpoint: Endpoint, url: String, generation: u64, on_fallba
     let client = reqwest::Client::builder()
         .tls_backend_preconfigured(endpoint.tls_config().clone())
         .timeout(RELAY_PING_TIMEOUT)
+        // A pooled connection the relay closed while idle fails the next ping.
+        .pool_max_idle_per_host(0)
         .build();
     let Ok(client) = client else { return };
     let ping = format!("{}/ping", url.trim_end_matches('/'));
+    let mut failures = 0u32;
     loop {
         if endpoint.is_closed() || state().lock().unwrap().generation != generation {
             return;
         }
-        let up = matches!(client.get(&ping).send().await, Ok(response) if response.status().is_success());
+        match client.get(&ping).send().await {
+            Ok(response) if response.status().is_success() => failures = 0,
+            Ok(response) => {
+                failures += 1;
+                tracing::info!(status = %response.status(), failures, "relay ping");
+            }
+            Err(error) => {
+                failures += 1;
+                tracing::info!(failures, "relay ping: {error:#}");
+            }
+        }
+        // One lost ping is noise; two in a row mean the relay is gone.
+        let up = failures < 2;
         let falling_back = *on_fallback.lock().unwrap();
         if up == falling_back {
             tracing::info!(up, "configured relay");
@@ -210,12 +226,20 @@ async fn watch_relay(endpoint: Endpoint, url: String, generation: u64, on_fallba
             }
             *on_fallback.lock().unwrap() = false;
         }
-        tokio::time::sleep(RELAY_CHECK).await;
+        let pause = if failures == 1 { RELAY_RETRY } else { RELAY_CHECK };
+        tokio::time::sleep(pause).await;
     }
 }
 
 /// Tells iroh the network changed, so it probes new paths now instead of on its timer.
-pub fn network_changed() {
+/// `interface` is the new default network's interface, which iroh cannot read itself
+/// on Android; without it iroh waits five seconds before dropping dead paths.
+pub fn network_changed(interface: Option<String>) {
+    tracing::info!(?interface, "network changed");
+    #[cfg(target_os = "android")]
+    netwatch::interfaces::set_android_default_interface(interface);
+    #[cfg(not(target_os = "android"))]
+    let _ = interface;
     if let Ok(endpoint) = current_endpoint() {
         runtime().spawn(async move { endpoint.network_change().await });
     }

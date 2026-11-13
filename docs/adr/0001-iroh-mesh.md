@@ -210,6 +210,15 @@ server it reaches. The reachable servers enter the connection catalog as
 platform registrations (`mesh:<memberId>`), so their threads show and open as
 on the desktop.
 
+An app sandbox can read neither `/proc/net/route` nor routes through `ip`, so
+iroh's netwatch never learns the default route on Android and waits its full
+five seconds before it drops paths after a network change: switching from
+wifi to mobile data cut every forward for about five seconds. The module
+vendors netwatch with one addition, a default interface the app sets from
+`ConnectivityManager` (`LinkProperties.getInterfaceName()`) on each change.
+With it the switch costs one slow request (about a second) and no failures.
+Drop the vendored copy once netwatch learns this itself.
+
 ### Termux forwarder
 
 `GET /api/mesh/forward-config` returns the forwarder's `forward.json` built

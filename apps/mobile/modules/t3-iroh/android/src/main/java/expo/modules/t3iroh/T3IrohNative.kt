@@ -15,7 +15,8 @@ internal object T3IrohNative {
 
   @JvmStatic external fun nativeSign(message: String): String
 
-  @JvmStatic external fun nativeNetworkChanged()
+  /** [defaultInterface] is the default network's interface, which iroh cannot read itself. */
+  @JvmStatic external fun nativeNetworkChanged(defaultInterface: String?)
 
   @JvmStatic external fun nativeCloseForward(endpointId: String)
 

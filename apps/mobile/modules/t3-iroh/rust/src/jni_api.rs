@@ -97,10 +97,12 @@ pub extern "system" fn Java_expo_modules_t3iroh_T3IrohNative_nativeSign(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_expo_modules_t3iroh_T3IrohNative_nativeNetworkChanged(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
+    interface: JString,
 ) {
-    crate::network_changed();
+    let interface = read(&mut env, &interface);
+    crate::network_changed(interface);
 }
 
 #[unsafe(no_mangle)]
