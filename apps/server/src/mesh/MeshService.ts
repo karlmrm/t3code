@@ -773,6 +773,7 @@ const make = Effect.gen(function* () {
         yield* sql`DELETE FROM mesh_invites WHERE expires_at < ${now - INVITE_TTL_MS}`.pipe(
           Effect.ignore,
         );
+        const relay = yield* relayFor();
         const payload: MeshInvitePayload = {
           v: 1,
           m: meshId,
@@ -781,6 +782,7 @@ const make = Effect.gen(function* () {
           l: self.label,
           t: ticket,
           c: code,
+          ...(relay === null ? {} : { r: { u: relay.url, k: relay.token } }),
         };
         const invite = `${MESH_INVITE_PREFIX}${Buffer.from(JSON.stringify(payload)).toString("base64url")}`;
         return {
@@ -1010,8 +1012,8 @@ const make = Effect.gen(function* () {
 
   // Peer API
 
-  const relayFor = Effect.fn("MeshService.relayFor")(function* (access: MeshAccess) {
-    if (access !== "full") return null;
+  /** Every member gets the relay: it only carries end-to-end encrypted packets. */
+  const relayFor = Effect.fn("MeshService.relayFor")(function* () {
     return ownRelay ?? Option.getOrNull(Option.flatMap(yield* readMeta("relay"), decodeRelay));
   });
 
@@ -1084,7 +1086,7 @@ const make = Effect.gen(function* () {
           return {
             meshId: mesh.meshId,
             members: recordsList(mesh.records),
-            relay: yield* relayFor(access),
+            relay: yield* relayFor(),
           } satisfies MeshPeerJoinResult;
         }),
       )
@@ -1184,7 +1186,7 @@ const make = Effect.gen(function* () {
       yield* markSeen(member.id, null, null);
       return {
         records: recordsList(mesh.records),
-        relay: yield* relayFor(member.access),
+        relay: yield* relayFor(),
       } satisfies MeshPeerSyncResult;
     },
   );

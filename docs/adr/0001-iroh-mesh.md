@@ -113,9 +113,14 @@ The joiner dials the inviter's ticket over iroh and calls the inviter's
 unauthenticated `POST /api/mesh/peer/join` with the code, its own record
 fields and a signature over the code with its key. The inviter spends the
 code, writes the joiner's record signed by itself (access from the invite;
-read-only expiry counts from now), and answers with every record. Only a
-joiner with full access also gets the relay URL and token; a read-only
-member uses the n0 relays. A server joins through its local API (`t3 mesh join`, or
+read-only expiry counts from now), and answers with every record, the relay
+URL and its token. Every member gets the token, read-only ones too: an
+endpoint is reached only through its home relay, so a member without it
+could not reach a server homed on the mesh relay off the LAN, and the relay
+only carries end-to-end encrypted packets between endpoints that each check
+the member list. The invite carries the relay as well (`r`), since a joiner
+off the inviter's network has no other way to reach it; whoever holds an
+invite may join anyway, so the token in it guards nothing more. A server joins through its local API (`t3 mesh join`, or
 Settings → Mesh → Join); the phone app joins directly through its embedded
 iroh.
 
@@ -192,6 +197,19 @@ server's tunnel protocol (ALPN `DUMBPIPEV0`, `hello` first), and report
 network changes to iroh. An Expo module wraps it. `httpBaseUrl` stays
 `http://127.0.0.1:<port>`, so the rest of the app is unchanged.
 
+The phone is a member of kind `client`: it has no server, so it joins with
+`POST /api/mesh/peer/join` over a forward to the inviter, keeps the member
+list in SecureStore, and asks each server member for its own client session
+(`/api/mesh/peer/session`, renewed an hour before it ends). Every 30 seconds
+while the app is in front, and shortly after a network change, it checks each
+server (`/.well-known/t3/environment` for the version, iroh for the path) and
+syncs records with the first that answers. Removing a member or changing its
+access, the phone signs the new record itself and hands it over with
+`peerSync`; leaving is a tombstone it signs for itself. Invites come from a
+server it reaches. The reachable servers enter the connection catalog as
+platform registrations (`mesh:<memberId>`), so their threads show and open as
+on the desktop.
+
 ### Termux forwarder
 
 `GET /api/mesh/forward-config` returns the forwarder's `forward.json` built
@@ -210,7 +228,8 @@ mints a short session in-process and calls the running server, like
 
 - No pairing per machine; one invite per new device.
 - Every server stores every member's public record; nothing secret is
-  replicated except the relay token, which only full members receive.
+  replicated except the relay token, which every member receives. Taking
+  relay access away from a removed member means a new relay token.
 - The mesh needs the server to listen over iroh. Joining or founding a mesh
   starts listening even without `--iroh`.
 - Upstream changes to auth, the connection catalog and the mobile app can

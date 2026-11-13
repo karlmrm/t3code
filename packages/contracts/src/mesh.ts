@@ -131,6 +131,11 @@ export const MeshInvitePayload = Schema.Struct({
   t: Schema.String,
   /** The one-time code. */
   c: Schema.String,
+  /**
+   * The mesh relay, so a joiner off the inviter's network reaches it. The
+   * invite grants membership already, so the token adds nothing to guard.
+   */
+  r: Schema.optional(Schema.Struct({ u: Schema.String, k: Schema.NullOr(Schema.String) })),
 });
 export type MeshInvitePayload = typeof MeshInvitePayload.Type;
 
