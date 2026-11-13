@@ -11,6 +11,9 @@ import { useRemoteConnections } from "../../state/use-remote-environment-registr
 import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
+import { ListRow } from "../../components/ui/ListRow";
+import { irohNative } from "../../mesh/native";
+import { SettingsSection } from "../settings/components/SettingsSection";
 
 export function ConnectionsRouteScreen() {
   const {
@@ -51,6 +54,18 @@ export function ConnectionsRouteScreen() {
           paddingTop: 16,
         }}
       >
+        {irohNative ? (
+          <View className="mb-5">
+            <SettingsSection>
+              <ListRow
+                icon="point.3.connected.trianglepath.dotted"
+                label="Mesh"
+                description="Your machines and phones over iroh"
+                onPress={() => navigation.navigate("SettingsMesh")}
+              />
+            </SettingsSection>
+          </View>
+        ) : null}
         <LocalEnvironmentList
           environments={connectedEnvironments}
           expandedId={expandedId}

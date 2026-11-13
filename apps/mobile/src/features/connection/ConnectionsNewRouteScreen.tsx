@@ -10,7 +10,7 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { extractMeshInvite, type EnvironmentId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Linking, Pressable, StyleSheet, View } from "react-native";
@@ -128,6 +128,14 @@ function PairingForm({
     }
 
     setScannerLocked(true);
+
+    const meshInvite = extractMeshInvite(data);
+    if (meshInvite !== null) {
+      setScanComplete(true);
+      setScannerLocked(false);
+      navigation.navigate("SettingsMesh", { invite: meshInvite });
+      return;
+    }
 
     try {
       const pairingUrl = extractPairingUrlFromQrPayload(data);

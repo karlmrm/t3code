@@ -1,0 +1,24 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.t3tools.iroh'
+version = '0.0.0'
+
+android {
+  namespace 'expo.modules.t3iroh'
+  defaultConfig {
+    versionCode 1
+    versionName '0.0.0'
+  }
+}
+
+// The iroh endpoint is Rust; cargo builds it incrementally before each build.
+def buildIroh = tasks.register('buildIrohRust', Exec) {
+  workingDir projectDir.parentFile
+  def abis = (project.findProperty('reactNativeArchitectures') ?: 'arm64-v8a').toString().split(',')
+  environment 'ABIS', abis.join(' ')
+  commandLine 'bash', 'scripts/build-android.sh'
+}
+preBuild.dependsOn buildIroh

@@ -71,6 +71,7 @@ import {
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
+import { MeshRouteScreen } from "./mesh/MeshRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
@@ -226,6 +227,11 @@ const SETTINGS_SCREENS = {
     screen: SettingsAboutRouteScreen,
     linking: "settings/about",
     options: settingsPage("About"),
+  }),
+  SettingsMesh: createNativeStackScreen({
+    screen: MeshRouteScreen,
+    linking: "mesh",
+    options: settingsPage("Mesh"),
   }),
   SettingsEnvironmentNew: createNativeStackScreen({
     screen: ConnectionsNewRouteScreen,

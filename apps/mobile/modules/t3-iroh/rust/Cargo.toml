@@ -1,0 +1,41 @@
+[package]
+name = "t3_iroh"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "unwind"
+
+[dependencies]
+anyhow = "1.0.104"
+data-encoding = "2.11.1"
+hex = "0.4.3"
+iroh = "1.4.1"
+iroh-tickets = "1.0.0"
+jni = "0.21"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = [
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "sync",
+  "time",
+  "macros",
+] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+  "registry",
+  "env-filter",
+  "fmt",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-context = "0.1.1"
+paranoid-android = "0.2.2"

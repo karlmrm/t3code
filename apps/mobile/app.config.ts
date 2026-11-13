@@ -3,7 +3,7 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
-type AppVariant = "development" | "preview" | "production";
+type AppVariant = "development" | "preview" | "production" | "iroh";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -94,6 +94,15 @@ const VARIANT_CONFIG = {
     relyingParty: "clerk.t3.codes",
     assets: PREVIEW_ASSETS,
   },
+  // The fork's own build with iroh inside; installs beside the store app.
+  iroh: {
+    appName: "T3 Code iroh",
+    scheme: "t3code",
+    iosBundleIdentifier: "no.lyseren.t3code",
+    androidPackage: "no.lyseren.t3code",
+    relyingParty: "clerk.t3.codes",
+    assets: PREVIEW_ASSETS,
+  },
   production: {
     appName: "T3 Code",
     scheme: "t3code",
@@ -109,11 +118,12 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     case "development":
     case "preview":
     case "production":
+    case "iroh":
       return value;
     case undefined:
       return "production";
     default:
-      throw new Error("APP_VARIANT must be development, preview, or production.");
+      throw new Error("APP_VARIANT must be development, preview, production, or iroh.");
   }
 }
 

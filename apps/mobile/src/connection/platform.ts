@@ -4,11 +4,17 @@ import {
   Persistence,
 } from "@t3tools/client-runtime/platform";
 import {
+  BearerConnectionCredential,
+  BearerConnectionProfile,
+  BearerConnectionRegistration,
+  BearerConnectionTarget,
   ConnectionBlockedError,
   ConnectionTransientError,
   Connectivity,
+  type PlatformConnectionRegistration,
   Wakeups,
 } from "@t3tools/client-runtime/connection";
+import { EnvironmentId } from "@t3tools/contracts";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -22,6 +28,7 @@ import * as Network from "expo-network";
 import { AppState } from "react-native";
 
 import { authClientMetadata } from "../lib/authClientMetadata";
+import { mesh, type MeshClientConnection } from "../mesh/meshClient";
 import * as Runtime from "../lib/runtime";
 import * as MobileStorage from "../persistence/mobile-storage";
 import { appAtomRegistry } from "../state/atom-registry";
@@ -245,10 +252,42 @@ const layerCapabilities = Layer.effectContext(
   }),
 );
 
-const layerPlatformConnectionSource = Layer.succeed(
+const MESH_POLL_INTERVAL = "3 seconds";
+
+function meshConnectionRegistration(connection: MeshClientConnection) {
+  const connectionId = `mesh:${connection.memberId}`;
+  const environmentId = EnvironmentId.make(connection.environmentId);
+  return new BearerConnectionRegistration({
+    target: new BearerConnectionTarget({ environmentId, label: connection.label, connectionId }),
+    profile: new BearerConnectionProfile({
+      connectionId,
+      environmentId,
+      label: connection.label,
+      httpBaseUrl: connection.httpBaseUrl,
+      wsBaseUrl: connection.wsBaseUrl,
+    }),
+    credential: new BearerConnectionCredential({ token: connection.token }),
+  });
+}
+
+/** The mesh servers this phone reaches over its own iroh endpoint. */
+const layerPlatformConnectionSource = Layer.effect(
   PlatformConnectionSource.PlatformConnectionSource,
-  PlatformConnectionSource.PlatformConnectionSource.of({
-    registrations: Stream.empty,
+  Effect.gen(function* () {
+    yield* Effect.sync(() => void mesh.start());
+    let cache = new Map<string, PlatformConnectionRegistration>();
+    const current = Effect.sync(() => {
+      const next = new Map<string, PlatformConnectionRegistration>();
+      for (const connection of mesh.connections()) {
+        const signature = `${connection.memberId}|${connection.httpBaseUrl}|${connection.token}`;
+        next.set(signature, cache.get(signature) ?? meshConnectionRegistration(connection));
+      }
+      cache = next;
+      return [...next.values()] as ReadonlyArray<PlatformConnectionRegistration>;
+    });
+    return PlatformConnectionSource.PlatformConnectionSource.of({
+      registrations: Stream.tick(MESH_POLL_INTERVAL).pipe(Stream.mapEffect(() => current)),
+    });
   }),
 );
 

@@ -8,6 +8,9 @@ import { RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SettingsScreen } from "./components/SettingsScreen";
+import { SettingsSection } from "./components/SettingsSection";
+import { ListRow } from "../../components/ui/ListRow";
+import { irohNative } from "../../mesh/native";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
 import { LocalEnvironmentList } from "../connection/LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "../connection/PullRequestRoutingSettings";
@@ -128,6 +131,16 @@ export function SettingsEnvironmentsRouteScreen() {
           ) : undefined
         }
       >
+        {irohNative ? (
+          <SettingsSection>
+            <ListRow
+              icon="point.3.connected.trianglepath.dotted"
+              label="Mesh"
+              description="Your machines and phones over iroh"
+              onPress={() => navigation.navigate("SettingsMesh")}
+            />
+          </SettingsSection>
+        ) : null}
         <LocalEnvironmentList
           environments={localEnvironments}
           expandedId={null}
