@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use iroh::endpoint::{Connection, presets};
-use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::endpoint::{Connection, IdleTimeout, QuicTransportConfig, presets};
+use iroh::{
+    Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
+};
 use iroh_tickets::endpoint::EndpointTicket;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -22,9 +24,17 @@ const ALPN: &[u8] = b"DUMBPIPEV0";
 const HANDSHAKE: &[u8] = b"hello";
 /// A stream that does not open this fast rides a dead path, say after a network switch.
 const OPEN_STREAM_TIMEOUT: Duration = Duration::from_secs(6);
-const RELAY_CHECK: Duration = Duration::from_secs(15);
+/// QUIC gives up on a connection that hears nothing this long; the lower of the
+/// two sides' values applies. iroh's 30 seconds kept a connection whose only
+/// path died (the peer left our relay, say) for half a minute before a redial.
+const MAX_IDLE: Duration = Duration::from_secs(10);
+const KEEP_ALIVE: Duration = Duration::from_secs(2);
+const DIAL_TIMEOUT: Duration = Duration::from_secs(4);
+const RELAY_CHECK: Duration = Duration::from_secs(5);
 const RELAY_RETRY: Duration = Duration::from_secs(3);
 const RELAY_PING_TIMEOUT: Duration = Duration::from_secs(5);
+/// A connection that hears nothing this long, two keep-alives, is redialed.
+const SILENCE: Duration = Duration::from_secs(4);
 
 /// Sends iroh's warnings and this crate's info to logcat under the tag `t3-iroh`.
 fn init_logging() {
@@ -124,7 +134,13 @@ fn relay_config(relay: &RelaySettings) -> Result<RelayConfig> {
 }
 
 async fn bind(secret: SecretKey, relay: Option<&RelaySettings>) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder(presets::N0).secret_key(secret);
+    let transport = QuicTransportConfig::builder()
+        .keep_alive_interval(KEEP_ALIVE)
+        .max_idle_timeout(Some(IdleTimeout::try_from(MAX_IDLE)?))
+        .build();
+    let mut builder = Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .transport_config(transport);
     if let Some(relay) = relay {
         let map: RelayMap = [relay_config(relay)?].into_iter().collect();
         builder = builder.relay_mode(RelayMode::Custom(map));
@@ -157,10 +173,11 @@ pub fn start(key_path: &str, relay: Option<RelaySettings>) -> Result<String> {
         let id = endpoint.id().to_string();
         tracing::info!(id = %id, relay = ?relay.as_ref().map(|r| &r.url), "endpoint started");
         let on_fallback = Arc::new(Mutex::new(false));
+        tokio::spawn(watch_silence(generation));
         if let Some(relay) = &relay {
             tokio::spawn(watch_relay(
                 endpoint.clone(),
-                relay.url.clone(),
+                relay_config(relay)?,
                 generation,
                 on_fallback.clone(),
             ));
@@ -181,9 +198,16 @@ pub fn start(key_path: &str, relay: Option<RelaySettings>) -> Result<String> {
     })
 }
 
-/// Adds n0's relays while the configured relay does not answer and removes them
-/// once it does, so the endpoint homes on the configured relay whenever it can.
-async fn watch_relay(endpoint: Endpoint, url: String, generation: u64, on_fallback: Arc<Mutex<bool>>) {
+/// Swaps the configured relay for n0's while it does not answer, and back once it
+/// does. iroh picks a new home relay at once only when its home leaves the map;
+/// merely adding relays waits for the next net report.
+async fn watch_relay(
+    endpoint: Endpoint,
+    own: RelayConfig,
+    generation: u64,
+    on_fallback: Arc<Mutex<bool>>,
+) {
+    let url = own.url.to_string();
     let fallback = RelayMode::Default.relay_map();
     let client = reqwest::Client::builder()
         .tls_backend_preconfigured(endpoint.tls_config().clone())
@@ -219,14 +243,22 @@ async fn watch_relay(endpoint: Endpoint, url: String, generation: u64, on_fallba
             for config in fallback.relays::<Vec<_>>() {
                 endpoint.insert_relay(config.url.clone(), config).await;
             }
+            endpoint.remove_relay(&own.url).await;
             *on_fallback.lock().unwrap() = true;
         } else if up && falling_back {
+            endpoint
+                .insert_relay(own.url.clone(), Arc::new(own.clone()))
+                .await;
             for config in fallback.relays::<Vec<_>>() {
                 endpoint.remove_relay(&config.url).await;
             }
             *on_fallback.lock().unwrap() = false;
         }
-        let pause = if failures == 1 { RELAY_RETRY } else { RELAY_CHECK };
+        let pause = if failures == 1 {
+            RELAY_RETRY
+        } else {
+            RELAY_CHECK
+        };
         tokio::time::sleep(pause).await;
     }
 }
@@ -245,10 +277,66 @@ pub fn network_changed(interface: Option<String>) {
     }
 }
 
+/// Closes forward connections that have heard nothing for `SILENCE`. Keep-alives
+/// go out every `KEEP_ALIVE`, so a live connection always hears acks; a silent
+/// one rides a dead path (a network switch, a relay that went away) and would
+/// otherwise hang until `MAX_IDLE`. The next stream redials, which takes well
+/// under a second.
+async fn watch_silence(generation: u64) {
+    let mut heard: HashMap<usize, (u64, tokio::time::Instant)> = HashMap::new();
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let slots: Vec<Arc<AsyncMutex<Option<Connection>>>> = {
+            let st = state().lock().unwrap();
+            if st.generation != generation {
+                return;
+            }
+            st.forwards
+                .values()
+                .map(|forward| forward.connection.clone())
+                .collect()
+        };
+        let now = tokio::time::Instant::now();
+        let mut seen = Vec::new();
+        for slot in slots {
+            let Some(open) = slot.lock().await.clone() else {
+                continue;
+            };
+            if open.close_reason().is_some() {
+                continue;
+            }
+            let id = open.stable_id();
+            seen.push(id);
+            let stats = open.stats();
+            // Acks arrive only for packets the peer received; datagrams alone may be
+            // the peer's own keep-alives reaching us over a path it cannot hear back on.
+            let rx = stats.frame_rx.acks + stats.frame_rx.path_acks;
+            let entry = heard.entry(id).or_insert((rx, now));
+            if entry.0 != rx {
+                *entry = (rx, now);
+            } else if now - entry.1 >= SILENCE {
+                tracing::info!(peer = %open.remote_id().fmt_short(), "silent; redialing");
+                open.close(0u32.into(), b"silent");
+                let mut guard = slot.lock().await;
+                if guard
+                    .as_ref()
+                    .is_some_and(|current| current.stable_id() == id)
+                {
+                    *guard = None;
+                }
+            }
+        }
+        heard.retain(|id, _| seen.contains(id));
+    }
+}
+
 /// Signs `message` with the member key; base64url without padding, as node's `base64url`.
 pub fn sign(message: &str) -> Result<String> {
     let st = state().lock().unwrap();
-    let secret = st.secret.as_ref().ok_or_else(|| anyhow!("iroh has not started"))?;
+    let secret = st
+        .secret
+        .as_ref()
+        .ok_or_else(|| anyhow!("iroh has not started"))?;
     let signature = secret.sign(message.as_bytes());
     Ok(data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes()))
 }
@@ -322,9 +410,22 @@ async fn connected(
         }
     }
     let endpoint = current_endpoint()?;
-    let addr = peer.lock().unwrap().clone();
+    // A member whose relay went down is homed on one of n0's relays, and
+    // discovery may still answer with the old one for a while. Initials go to
+    // every known path, so offering all of them reaches it at once.
+    let addr = peer.lock().unwrap().clone().with_addrs(
+        RelayMode::Default
+            .relay_map()
+            .urls::<Vec<_>>()
+            .into_iter()
+            .map(TransportAddr::Relay),
+    );
     tracing::info!(peer = %addr.id.fmt_short(), "dialing");
-    let open = endpoint.connect(addr, ALPN).await?;
+    // A handshake whose first packets went nowhere waits out the idle timeout;
+    // a fresh dial gets through sooner.
+    let open = tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, ALPN))
+        .await
+        .map_err(|_| anyhow!("dial timed out"))??;
     tracing::info!(peer = %open.remote_id().fmt_short(), "connected");
     *guard = Some(open.clone());
     Ok(open)
@@ -341,7 +442,10 @@ async fn open_stream(
             // Drop the connection so the next attempt dials afresh.
             current.close(0u32.into(), b"stale");
             let mut guard = slot.lock().await;
-            if guard.as_ref().is_some_and(|open| open.stable_id() == current.stable_id()) {
+            if guard
+                .as_ref()
+                .is_some_and(|open| open.stable_id() == current.stable_id())
+            {
                 *guard = None;
             }
             Err(match outcome {
@@ -410,15 +514,18 @@ pub fn status() -> String {
         .into_iter()
         .map(|(id, port, slot)| {
             let open = slot.try_lock().ok().and_then(|guard| guard.clone());
-            let path = open.as_ref().filter(|c| c.close_reason().is_none()).and_then(|c| {
-                c.paths().iter().find(|p| p.is_selected()).map(|p| {
-                    serde_json::json!({
-                        "kind": if p.is_relay() { "relay" } else { "direct" },
-                        "addr": format!("{:?}", p.remote_addr()),
-                        "rttMs": p.rtt().as_millis() as u64,
+            let path = open
+                .as_ref()
+                .filter(|c| c.close_reason().is_none())
+                .and_then(|c| {
+                    c.paths().iter().find(|p| p.is_selected()).map(|p| {
+                        serde_json::json!({
+                            "kind": if p.is_relay() { "relay" } else { "direct" },
+                            "addr": format!("{:?}", p.remote_addr()),
+                            "rttMs": p.rtt().as_millis() as u64,
+                        })
                     })
-                })
-            });
+                });
             serde_json::json!({ "id": id, "port": port, "path": path })
         })
         .collect();

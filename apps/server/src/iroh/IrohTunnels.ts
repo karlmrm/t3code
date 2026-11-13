@@ -29,8 +29,8 @@ const TUNNEL_ALPN = Array.from(Buffer.from("DUMBPIPEV0"));
 const HANDSHAKE = Buffer.from("hello");
 const READ_CHUNK_BYTES = 64 * 1024;
 const ACCEPT_RETRY_MS = 1000;
-const RELAY_CHECK_MS = 15_000;
-const RELAY_PING_TIMEOUT_MS = 5000;
+const RELAY_CHECK_MS = 5000;
+const RELAY_PING_TIMEOUT_MS = 3000;
 /** A stream that does not open this fast rides a dead path (say, after a network switch). */
 const OPEN_STREAM_TIMEOUT_MS = 6000;
 
@@ -175,29 +175,37 @@ export class IrohTunnels {
     );
     const tunnels = new IrohTunnels(iroh, endpoint, onError);
     if (typeof options.relay === "object" && options.relay.fallback) {
-      tunnels.watchRelay(options.relay.url);
+      tunnels.watchRelay(options.relay);
     }
     return tunnels;
   }
 
   /**
-   * Adds n0's relays while the configured relay does not answer and removes
-   * them once it does, so iroh homes there again.
+   * Swaps the configured relay for n0's while it does not answer, and back
+   * once it does. iroh picks a new home relay at once only when its home
+   * leaves the map; merely adding relays waits for the next net report
+   * (about 20 s), and peers cannot reach this endpoint in the meantime.
    */
-  private watchRelay(url: string): void {
+  private watchRelay(relay: IrohRelayConfig): void {
+    const own = {
+      url: relay.url,
+      ...(relay.authToken === undefined ? {} : { authToken: relay.authToken }),
+    };
     const fallback = fallbackRelays(this.iroh);
     let onFallback = false;
     void (async () => {
       while (!this.closed) {
-        const up = await relayAnswers(url);
+        const up = await relayAnswers(relay.url);
         if (!up && !onFallback) {
           for (const config of fallback) await this.endpoint.insertRelay(config);
+          await this.endpoint.removeRelay(own.url);
           onFallback = true;
-          this.onError("iroh relay does not answer; using n0's relays", url);
+          this.onError("iroh relay does not answer; using n0's relays", relay.url);
         } else if (up && onFallback) {
+          await this.endpoint.insertRelay(own);
           for (const config of fallback) await this.endpoint.removeRelay(config.url);
           onFallback = false;
-          this.onError("iroh relay answers again; leaving n0's relays", url);
+          this.onError("iroh relay answers again; leaving n0's relays", relay.url);
         }
         await NodeTimersPromises.setTimeout(RELAY_CHECK_MS);
       }

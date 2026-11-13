@@ -219,6 +219,42 @@ vendors netwatch with one addition, a default interface the app sets from
 With it the switch costs one slow request (about a second) and no failures.
 Drop the vendored copy once netwatch learns this itself.
 
+#### Relay outage and dead paths
+
+When the mesh relay goes down, every member swaps it for n0's public relays
+and swaps back once it answers `/ping` again. Server and phone both check
+every five seconds. A server swaps on one failed ping (three-second timeout),
+while the phone waits for two failures in a row, because a single lost ping is
+common on mobile data. The swap removes the dead relay from the map instead of
+only adding n0's. iroh picks a new home relay at once only when its home
+leaves the map. Merely adding relays waits for the next net report, about 20
+seconds, and nobody can reach the member during that time.
+
+The phone keeps its QUIC connections short-lived when silent. It sends
+keep-alives every 2 seconds and uses a 10-second idle timeout; the lower side's
+value applies, so this also covers phone↔server. The phone also closes any
+connection that has had no ACK from the peer for 4 seconds, two keep-alives,
+and redials on the next stream. ACKs count, not received datagrams, because the
+peer's own keep-alives can still arrive over a path that cannot carry our
+packets back. A redial that offers the peer's address plus all of n0's relays
+connects in well under a second. A dial that does not finish within 4 seconds
+is retried.
+
+Measured on a Pixel on mobile data with two servers, the real relay stopped
+for a minute:
+
+|                                     | Outage     |
+| ----------------------------------- | ---------- |
+| Before these changes                | 18 to 29 s |
+| Swap-in only plus 10-second idle    | 8.7 s      |
+| With the silence check              | 0 to 2.8 s |
+| Wifi to data or back, four switches | 0 s        |
+| Wifi to data or back, worst seen    | 0.8 s      |
+
+The Node binding (`@number0/iroh` 1.2.0) has no transport options and no
+connection stats. Server↔server connections therefore keep iroh's 30-second
+idle timeout, and a server that loses a peer redials within that time.
+
 ### Termux forwarder
 
 `GET /api/mesh/forward-config` returns the forwarder's `forward.json` built
