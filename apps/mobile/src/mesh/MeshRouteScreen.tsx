@@ -51,6 +51,9 @@ const accessText = (record: MeshMemberRecord) =>
         ? "Read-only, expired"
         : `Read-only until ${new Date(record.accessExpiresAt).toLocaleString()}`;
 
+const isExpired = (record: MeshMemberRecord) =>
+  record.accessExpiresAt !== null && Date.parse(record.accessExpiresAt) <= Date.now();
+
 const hasFullAccess = (record: MeshMemberRecord) =>
   record.access === "full" &&
   (record.accessExpiresAt === null || Date.parse(record.accessExpiresAt) > Date.now());
@@ -270,13 +273,15 @@ function MemberRow(props: {
     ? "This phone"
     : record.kind === "client"
       ? "Phone"
-      : statusText(props.status);
+      : isExpired(record)
+        ? null
+        : statusText(props.status);
   return (
     <View>
       <ListActionRow
         icon={record.kind === "client" ? "iphone" : "desktopcomputer"}
         label={record.label}
-        description={`${accessText(record)} · ${detail}`}
+        description={detail === null ? accessText(record) : `${accessText(record)} · ${detail}`}
         detail={record.id.slice(0, 10)}
         disabled={!props.canManage || props.self}
         onPress={() => setOpen((value) => !value)}
