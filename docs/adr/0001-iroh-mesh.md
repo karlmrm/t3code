@@ -252,6 +252,30 @@ for a minute:
 | Wifi to data or back, four switches | 0 s        |
 | Wifi to data or back, worst seen    | 0.8 s      |
 
+The same test on the release builds, the Pixel against the production desktop
+server, own relay on the home router:
+
+|                                    | 0.1.9-iroh.5                             | 0.1.9-iroh.6 |
+| ---------------------------------- | ---------------------------------------- | ------------ |
+| Server relay check, ping timeout   | 5 s, 3 s                                 | 2 s, 2 s     |
+| Wifi to data or back, worst switch | 0.1 s                                    | 0 to 2.4 s   |
+| Relay stopped, on mobile data      | 8.0 s                                    | 3.6 to 5.9 s |
+| Wifi back after the relay test     | 2.7 s                                    | 0.9 to 2.7 s |
+| Path on wifi / data / n0 fallback  | direct 6 ms / relay 40 ms / direct 37 ms | the same     |
+
+The relay-outage time is the phone noticing the silence (4 s) plus a redial
+through n0 that waits for the server to have moved its home there.
+
+Known limit: after wifi comes back, the connection sometimes stays on a relay
+for up to about a minute and a half. iroh's first holepunch rounds on the new
+network fail, and with no new addresses it retries only every 60 seconds
+(`UPGRADE_INTERVAL` in iroh 1.4). Traffic keeps flowing over the relay, at
+40 to 100 ms instead of under 10. A second dial beside the old connection does
+not help, because iroh keeps one selected path per remote and the new
+connection takes the relay path too. Closing the old connection first would
+help, but it breaks open WebSockets. iroh has no public call to start a
+holepunch round.
+
 The Node binding (`@number0/iroh` 1.2.0) has no transport options and no
 connection stats. Server↔server connections therefore keep iroh's 30-second
 idle timeout, and a server that loses a peer redials within that time.
