@@ -75,6 +75,30 @@ export const layer = HttpApiBuilder.group(
         }),
       )
       .handle(
+        "portForwards",
+        Effect.fn("environment.mesh.portForwards")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthAccessReadScope);
+          return yield* mesh.portForwards;
+        }),
+      )
+      .handle(
+        "addPortForward",
+        Effect.fn("environment.mesh.addPortForward")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthAccessWriteScope);
+          return yield* mesh.addPortForward(args.payload);
+        }),
+      )
+      .handle(
+        "removePortForward",
+        Effect.fn("environment.mesh.removePortForward")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthAccessWriteScope);
+          return yield* mesh.removePortForward(args.payload);
+        }),
+      )
+      .handle(
         "peerJoin",
         Effect.fn("environment.mesh.peerJoin")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);

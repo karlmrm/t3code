@@ -286,6 +286,40 @@ idle timeout, and a server that loses a peer redials within that time.
 from the member list (each server member keeps a stable port from 4773 up),
 and `t3 mesh forward-config` prints it.
 
+### Port forwards: adb and loopback ports over iroh
+
+A member may reach a named port on another server member over iroh, mainly
+that machine's adb server, so the phones plugged into one machine answer
+`adb` and `scrcpy` on another.
+
+- Its own ALPN, `T3PORT/1`, beside `DUMBPIPEV0`. The opener sends one length
+  byte and the service name (at most 64 bytes of UTF-8); the listener answers
+  one status byte, 0 open, 1 refused, 2 unreachable, then splices the stream
+  to the target.
+- Services: `adb` (the adb server from `ADB_SERVER_SOCKET` or
+  `ANDROID_ADB_SERVER_PORT`, else 127.0.0.1:5037, started with
+  `adb start-server` when nothing answers) and `port:<n>` (any loopback port).
+- Only a current member with full access gets through; the gate checks the
+  iroh connection's remote id, which is the member id. A full member may run
+  a terminal there already, so this grants nothing more. Read-only members
+  and strangers are refused and logged.
+- The client side keeps its forwards in `mesh_port_forwards` (local port,
+  member, service) and reopens them on every sync, with the member's newest
+  ticket. adb gets the first free port from 5038; `port:<n>` the same number.
+  A removed member's forwards close and are forgotten; leaving clears them.
+- `t3 mesh port add <member> adb|<port> [--port N]`, `t3 mesh port list`,
+  `t3 mesh port remove <port>`, over `GET/POST /api/mesh/port-forwards` and
+  `POST /api/mesh/port-forwards/remove` (access:read / access:write).
+
+Usage: `ADB_SERVER_SOCKET=tcp:127.0.0.1:5038 adb devices`. `adb forward` and
+`adb reverse` open their ports on the far machine, so scrcpy also needs its
+port: `t3 mesh port add <member> 27183` and `scrcpy --force-adb-forward`.
+
+Measured between two servers on one machine: `adb devices` and `adb shell`
+work; a 50 MB push runs at 18 MB/s against 200 MB/s direct. The limit is the
+`@number0/iroh` binding, whose streams take and return `Array<number>`; fine
+for APKs, logs and screen mirroring at modest bitrates.
+
 ### CLI
 
 `t3 mesh invite [--read-only] [--for 1h|1d|7d|never]`, `t3 mesh join

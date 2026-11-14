@@ -2,6 +2,7 @@
 import * as NodeHttp from "node:http";
 import * as NodeEvents from "node:events";
 import * as NodeModule from "node:module";
+import * as NodeNet from "node:net";
 
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -61,6 +62,64 @@ it.live("forwards HTTP to the listening machine's loopback port, one stream per 
       expect(second).toBe("box POST /two");
       // The same ticket reuses its forward.
       expect(yield* Effect.promise(() => dialing.forward(listening.loopbackTicket()))).toBe(origin);
+    }),
+  ),
+);
+
+const serveEcho = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const server = NodeNet.createServer((socket) => socket.pipe(socket));
+    server.listen(0, "127.0.0.1");
+    await NodeEvents.EventEmitter.once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+    return { server, port: address.port };
+  }),
+  ({ server }) => Effect.sync(() => server.close()),
+);
+
+/** Sends `text` through a fresh TCP connection and resolves with whatever came back before it closed. */
+const roundTrip = (port: number, text: string) =>
+  new Promise<string>((resolve, reject) => {
+    const socket = NodeNet.connect({ host: "127.0.0.1", port });
+    let received = "";
+    socket.on("data", (chunk) => {
+      received += chunk.toString();
+      if (received.length >= text.length) socket.end();
+    });
+    socket.on("close", () => resolve(received));
+    socket.on("error", reject);
+    socket.write(text);
+  });
+
+it.live("forwards a named port only to whom the gate lets through", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const echo = yield* serveEcho;
+      const listening = yield* openTunnels(4, true);
+      listening.serve({ host: "127.0.0.1", port: echo.port });
+      const asked: Array<[string, string]> = [];
+      listening.servePorts(async (remoteId, service) => {
+        asked.push([remoteId, service]);
+        return service === "echo" ? { host: "127.0.0.1", port: echo.port } : null;
+      });
+      const dialing = yield* openTunnels(5, false);
+
+      const port = yield* Effect.promise(() =>
+        dialing.forwardPort(listening.loopbackTicket(), "echo", 0),
+      );
+      expect(yield* Effect.promise(() => roundTrip(port, "ping over iroh"))).toBe("ping over iroh");
+      expect(asked).toEqual([[dialing.endpointId, "echo"]]);
+      expect(dialing.portForwardError(port)).toBeNull();
+
+      const refused = yield* Effect.promise(() =>
+        dialing.forwardPort(listening.loopbackTicket(), "secret", 0),
+      );
+      expect(yield* Effect.promise(() => roundTrip(refused, "let me in"))).toBe("");
+      expect(dialing.portForwardError(refused)).toMatch(/refused/u);
+
+      yield* Effect.promise(() => dialing.closePortForward(port));
+      yield* Effect.promise(() => expect(roundTrip(port, "gone")).rejects.toThrow());
     }),
   ),
 );

@@ -9,9 +9,9 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
-import { IrohTunnels, type LoopbackTarget } from "./IrohTunnels.ts";
+import { IrohTunnels, type LoopbackTarget, type PortGate } from "./IrohTunnels.ts";
 
-export type { LoopbackTarget };
+export type { LoopbackTarget, PortGate };
 
 /** A peer address that names an iroh ticket instead of a URL: `iroh:<ticket>`. */
 const IROH_ROUTE_PREFIX = "iroh:";
@@ -26,7 +26,7 @@ export const irohRouteTicket = (url: string): string =>
 export const irohRoute = (ticket: string): string => `${IROH_ROUTE_PREFIX}${ticket}`;
 
 export class IrohError extends Schema.TaggedError<IrohError>()("IrohError", {
-  operation: Schema.Literals(["open", "listen", "forward"]),
+  operation: Schema.Literals(["open", "listen", "forward", "forwardPort"]),
   cause: Schema.Defect(),
 }) {
   override get message(): string {
@@ -53,6 +53,17 @@ export class IrohEndpoint extends Context.Service<
     readonly currentTicket: Effect.Effect<Option.Option<string>>;
     /** Closes the forward to one endpoint id. */
     readonly closeForward: (endpointId: string) => Effect.Effect<void>;
+    /** Lets peers reach named ports, such as adb's, as far as `gate` allows. */
+    readonly servePorts: (gate: PortGate) => Effect.Effect<void, IrohError>;
+    /** Listens on loopback `port` (0: any) for `service` at the peer in `route`; returns the port. */
+    readonly forwardPort: (
+      route: string,
+      service: string,
+      port: number,
+    ) => Effect.Effect<number, IrohError>;
+    readonly closePortForward: (port: number) => Effect.Effect<void>;
+    /** Why the last connection through the forward on `port` failed, if it did. */
+    readonly portForwardError: (port: number) => Effect.Effect<string | null>;
   }
 >()("t3/iroh/IrohEndpoint") {}
 
@@ -150,6 +161,27 @@ const make = Effect.fnUntraced(function* (options: { readonly dialOnly: boolean 
         catch: (cause) => new IrohError({ operation: "forward", cause }),
       });
     }),
+    servePorts: Effect.fn("IrohEndpoint.servePorts")(function* (gate) {
+      const endpoint = yield* tunnels;
+      endpoint.servePorts(gate);
+    }),
+    forwardPort: Effect.fn("IrohEndpoint.forwardPort")(function* (route, service, port) {
+      const endpoint = yield* tunnels;
+      return yield* Effect.tryPromise({
+        try: () => endpoint.forwardPort(irohRouteTicket(route), service, port),
+        catch: (cause) => new IrohError({ operation: "forwardPort", cause }),
+      });
+    }),
+    closePortForward: Effect.fn("IrohEndpoint.closePortForward")(function* (port) {
+      const current = yield* Ref.get(opened);
+      if (Option.isSome(current)) {
+        yield* Effect.promise(() => current.value.closePortForward(port));
+      }
+    }),
+    portForwardError: Effect.fn("IrohEndpoint.portForwardError")(function* (port) {
+      const current = yield* Ref.get(opened);
+      return Option.isSome(current) ? current.value.portForwardError(port) : null;
+    }),
   });
 });
 
@@ -166,6 +198,17 @@ export const layerTest = (origins: Readonly<Record<string, string>> = {}) =>
       ticket: Effect.succeedNone,
       currentTicket: Effect.succeedNone,
       closeForward: Effect.fn("IrohEndpoint.closeForward")(function* () {}),
+      servePorts: Effect.fn("IrohEndpoint.servePorts")(function* () {}),
+      forwardPort: Effect.fn("IrohEndpoint.forwardPort")(function* () {
+        return yield* new IrohError({
+          operation: "forwardPort",
+          cause: new Error("IrohEndpoint.layerTest does not forward ports"),
+        });
+      }),
+      closePortForward: Effect.fn("IrohEndpoint.closePortForward")(function* () {}),
+      portForwardError: Effect.fn("IrohEndpoint.portForwardError")(function* () {
+        return yield* Effect.succeed(null);
+      }),
       forward: Effect.fn("IrohEndpoint.forward")(function* (route) {
         const origin = origins[irohRouteTicket(route)];
         if (origin === undefined) {

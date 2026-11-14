@@ -27,6 +27,14 @@ const requireForIroh = NodeModule.createRequire(import.meta.url);
  */
 const TUNNEL_ALPN = Array.from(Buffer.from("DUMBPIPEV0"));
 const HANDSHAKE = Buffer.from("hello");
+/**
+ * Named ports beyond the T3 HTTP port, such as adb's server. The opener sends
+ * the name (one length byte, then UTF-8); the listener answers one status byte
+ * from `PortStatus` and, on `open`, splices the stream to what its gate named.
+ */
+const PORT_ALPN = Array.from(Buffer.from("T3PORT/1"));
+const MAX_PORT_SERVICE_BYTES = 64;
+const PortStatus = { open: 0, refused: 1, unreachable: 2 } as const;
 const READ_CHUNK_BYTES = 64 * 1024;
 const ACCEPT_RETRY_MS = 1000;
 const RELAY_CHECK_MS = 2000;
@@ -52,6 +60,20 @@ export interface IrohRelayConfig {
 export interface LoopbackTarget {
   readonly host: string;
   readonly port: number;
+}
+
+/**
+ * Decides who reaches which named port: the target for `service` when the
+ * peer `remoteId` may use it, else null. It may also start the service.
+ */
+export type PortGate = (remoteId: string, service: string) => Promise<LoopbackTarget | null>;
+
+interface PortForward {
+  readonly server: NodeNet.Server;
+  readonly peer: string;
+  readonly service: string;
+  readonly sockets: Set<NodeNet.Socket>;
+  error: string | null;
 }
 
 /**
@@ -132,10 +154,13 @@ async function connectSocket(target: LoopbackTarget): Promise<NodeNet.Socket> {
 /**
  * One iroh endpoint per server. Listening forwards each incoming stream to
  * the server's loopback port; `forward` gives a loopback port that reaches a
- * peer, the way `ssh -L` does.
+ * peer, the way `ssh -L` does. `servePorts` and `forwardPort` do the same for
+ * named ports a gate allows, such as adb's.
  */
 export class IrohTunnels {
   private readonly forwards = new Map<string, Promise<NodeNet.Server>>();
+  private readonly portForwards = new Map<number, PortForward>();
+  private portGate: PortGate | undefined;
   /** The newest address per forwarded endpoint id; a later ticket updates it. */
   private readonly peers = new Map<string, EndpointAddr>();
   private serving = false;
@@ -235,12 +260,23 @@ export class IrohTunnels {
     ).toString();
   }
 
+  private listenAlpns(): Array<Array<number>> {
+    return this.portGate === undefined ? [TUNNEL_ALPN] : [TUNNEL_ALPN, PORT_ALPN];
+  }
+
+  /** Lets peers reach named ports through `gate`, once `serve` listens. */
+  servePorts(gate: PortGate): void {
+    const first = this.portGate === undefined;
+    this.portGate = gate;
+    if (first && this.serving) this.endpoint.setAlpns(this.listenAlpns());
+  }
+
   /** Accepts connections until the endpoint closes, forwarding each stream to `target`. */
   serve(target: LoopbackTarget): void {
     if (this.serving) return;
     this.serving = true;
     // An endpoint opened only to dial (a peer link) starts listening when a mesh needs it.
-    this.endpoint.setAlpns([TUNNEL_ALPN]);
+    this.endpoint.setAlpns(this.listenAlpns());
     void (async () => {
       while (!this.closed) {
         let incoming: Awaited<ReturnType<Endpoint["acceptNext"]>>;
@@ -271,6 +307,9 @@ export class IrohTunnels {
     } catch {
       return; // A failed handshake is the remote's problem.
     }
+    if (Buffer.from(connection.alpn()).equals(Buffer.from(PORT_ALPN))) {
+      return this.servePortConnection(connection);
+    }
     for (;;) {
       let stream: BiStream;
       try {
@@ -285,6 +324,45 @@ export class IrohTunnels {
           return;
         }
         await splice(stream, await connectSocket(target));
+      })().catch(async () => {
+        await stream.send.reset(1n).catch(() => undefined);
+      });
+    }
+  }
+
+  private async servePortConnection(connection: Connection): Promise<void> {
+    const remoteId = connection.remoteId().toString();
+    for (;;) {
+      let stream: BiStream;
+      try {
+        stream = await connection.acceptBi();
+      } catch {
+        return;
+      }
+      void (async () => {
+        const [length] = await stream.recv.readExact(1);
+        if (length === undefined || length === 0 || length > MAX_PORT_SERVICE_BYTES) {
+          await stream.send.reset(1n);
+          return;
+        }
+        const service = Buffer.from(await stream.recv.readExact(length)).toString("utf8");
+        const gate = this.portGate;
+        const target = gate === undefined ? null : await gate(remoteId, service).catch(() => null);
+        if (target === null) {
+          await stream.send.writeAll([PortStatus.refused]);
+          await stream.send.finish();
+          return;
+        }
+        let socket: NodeNet.Socket;
+        try {
+          socket = await connectSocket(target);
+        } catch {
+          await stream.send.writeAll([PortStatus.unreachable]);
+          await stream.send.finish();
+          return;
+        }
+        await stream.send.writeAll([PortStatus.open]);
+        await splice(stream, socket);
       })().catch(async () => {
         await stream.send.reset(1n).catch(() => undefined);
       });
@@ -313,14 +391,14 @@ export class IrohTunnels {
     return `http://127.0.0.1:${address.port}`;
   }
 
-  private async openForward(key: string): Promise<NodeNet.Server> {
+  /** Opens streams to the peer `key` on `alpn`, over one QUIC connection reopened once it closes. */
+  private dialer(key: string, alpn: Array<number>): () => Promise<BiStream> {
     let connection: Promise<Connection> | undefined;
-    // One QUIC connection per peer, reopened once it closes.
     const connected = (): Promise<Connection> => {
       if (connection === undefined) {
         const peer = this.peers.get(key);
         if (peer === undefined) return Promise.reject(new Error("unknown iroh peer"));
-        const dialing = this.endpoint.connect(peer, TUNNEL_ALPN);
+        const dialing = this.endpoint.connect(peer, alpn);
         connection = dialing;
         dialing.catch(() => {
           if (connection === dialing) connection = undefined;
@@ -355,15 +433,21 @@ export class IrohTunnels {
         if (timer !== undefined) clearTimeout(timer);
       }
     };
+    return async () => {
+      try {
+        return await openStream();
+      } catch {
+        return await openStream();
+      }
+    };
+  }
+
+  private async openForward(key: string): Promise<NodeNet.Server> {
+    const openStream = this.dialer(key, TUNNEL_ALPN);
     const server = NodeNet.createServer((socket) => {
       socket.pause();
       void (async () => {
-        let stream: BiStream;
-        try {
-          stream = await openStream();
-        } catch {
-          stream = await openStream();
-        }
+        const stream = await openStream();
         await stream.send.writeAll(Array.from(HANDSHAKE));
         socket.resume();
         await splice(stream, socket);
@@ -375,6 +459,85 @@ export class IrohTunnels {
     server.listen(0, "127.0.0.1");
     await NodeEvents.EventEmitter.once(server, "listening");
     return server;
+  }
+
+  /**
+   * Listens on loopback `port` (0: any free one) and carries each connection
+   * to `service` at the peer in `ticket`. Returns the port. Asking again for
+   * the same port, peer and service only updates the peer's address.
+   */
+  async forwardPort(ticket: string, service: string, port: number): Promise<number> {
+    const addr = this.iroh.EndpointTicket.fromString(ticket).endpointAddr();
+    const peer = addr.id().toString();
+    const name = Buffer.from(service, "utf8");
+    if (name.length === 0 || name.length > MAX_PORT_SERVICE_BYTES) {
+      throw new Error(`invalid port service name: ${service}`);
+    }
+    this.peers.set(peer, addr);
+    const existing = this.portForwards.get(port);
+    if (existing !== undefined) {
+      if (existing.peer === peer && existing.service === service) return port;
+      throw new Error(`port ${port} already forwards ${existing.service}`);
+    }
+    const openStream = this.dialer(peer, PORT_ALPN);
+    const sockets = new Set<NodeNet.Socket>();
+    let forward: PortForward | undefined;
+    const fail = (socket: NodeNet.Socket, error: string) => {
+      socket.destroy();
+      if (forward !== undefined) forward.error = error;
+    };
+    const server = NodeNet.createServer((socket) => {
+      socket.pause();
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      void (async () => {
+        const stream = await openStream();
+        await stream.send.writeAll([name.length, ...name]);
+        const [status] = await stream.recv.readExact(1);
+        if (status !== PortStatus.open) {
+          await stream.send.finish().catch(() => undefined);
+          return fail(
+            socket,
+            status === PortStatus.refused
+              ? `the peer refused ${service}`
+              : `${service} does not answer at the peer`,
+          );
+        }
+        if (forward !== undefined) forward.error = null;
+        socket.resume();
+        await splice(stream, socket);
+      })().catch((cause) =>
+        fail(socket, `could not reach the peer: ${cause instanceof Error ? cause.message : cause}`),
+      );
+    });
+    server.listen(port, "127.0.0.1");
+    await Promise.race([
+      NodeEvents.EventEmitter.once(server, "listening"),
+      NodeEvents.EventEmitter.once(server, "error").then(([cause]) => Promise.reject(cause)),
+    ]);
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      server.close();
+      throw new Error("iroh port forward has no TCP address");
+    }
+    forward = { server, peer, service, sockets, error: null };
+    this.portForwards.set(address.port, forward);
+    return address.port;
+  }
+
+  /** Why the last connection through the forward on `port` failed; null once one got through. */
+  portForwardError(port: number): string | null {
+    return this.portForwards.get(port)?.error ?? null;
+  }
+
+  async closePortForward(port: number): Promise<void> {
+    const forward = this.portForwards.get(port);
+    this.portForwards.delete(port);
+    if (forward !== undefined) {
+      const closed = new Promise<void>((resolve) => forward.server.close(() => resolve()));
+      for (const socket of forward.sockets) socket.destroy();
+      await closed;
+    }
   }
 
   /** Closes the forward to `endpointId`, if one is open. */
@@ -392,6 +555,11 @@ export class IrohTunnels {
       if (result.status === "fulfilled") result.value.close();
     }
     this.forwards.clear();
+    for (const forward of this.portForwards.values()) {
+      forward.server.close();
+      for (const socket of forward.sockets) socket.destroy();
+    }
+    this.portForwards.clear();
     await this.endpoint.close();
   }
 }

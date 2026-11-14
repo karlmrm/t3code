@@ -103,6 +103,9 @@ import {
   MeshPeerSessionResult,
   MeshPeerSyncRequest,
   MeshPeerSyncResult,
+  MeshPortForwardAddInput,
+  MeshPortForwardRemoveInput,
+  MeshPortForwards,
   MeshState,
 } from "./mesh.ts";
 
@@ -1059,6 +1062,29 @@ class EnvironmentMeshHttpApi extends HttpApiGroup.make("mesh")
     HttpApiEndpoint.get("forwardConfig", "/api/mesh/forward-config", {
       headers: OptionalBearerHeaders,
       success: MeshForwardConfig,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("portForwards", "/api/mesh/port-forwards", {
+      headers: OptionalBearerHeaders,
+      success: MeshPortForwards,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("addPortForward", "/api/mesh/port-forwards", {
+      headers: OptionalBearerHeaders,
+      payload: MeshPortForwardAddInput,
+      success: MeshPortForwards,
+      error: [...EnvironmentScopedOperationErrors, MeshError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("removePortForward", "/api/mesh/port-forwards/remove", {
+      headers: OptionalBearerHeaders,
+      payload: MeshPortForwardRemoveInput,
+      success: MeshPortForwards,
       error: [...EnvironmentScopedOperationErrors, MeshError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )

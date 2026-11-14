@@ -25,6 +25,9 @@ import {
   type MeshPeerSessionResult,
   type MeshPeerSyncRequest,
   type MeshPeerSyncResult,
+  type MeshPortForwardAddInput,
+  type MeshPortForwardRemoveInput,
+  type MeshPortForwards,
   type MeshRelay,
   MeshReadOnlyScopes,
   type MeshSessionPurpose,
@@ -53,6 +56,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpServer from "effect/http/HttpServer";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -63,6 +67,7 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 import { forkParked } from "../serverActivation.ts";
 import { loopbackUrlHostForAddress } from "../startupAccess.ts";
 import { meshKeyFromSeed, randomToken, sha256, verifyMeshSignature } from "./MeshCrypto.ts";
+import { normalizeMeshPortService, resolveMeshPortService } from "./MeshPorts.ts";
 import { isActive, isActiveFull, isExpired, mergeRecords } from "./MeshRecords.ts";
 
 const MeshPeerApi = HttpApi.make(EnvironmentHttpApi.identifier)
@@ -80,6 +85,9 @@ const SESSION_RENEW_MS = 60 * 60 * 1000;
 /** A delegation link is renewed this long before it ends. */
 const LINK_RENEW_MS = 2 * 24 * 60 * 60 * 1000;
 const FIRST_FORWARD_PORT = 4773;
+/** adb's own server is on 5037; a forwarded one goes next to it. */
+const FIRST_ADB_FORWARD_PORT = 5038;
+const LAST_ADB_FORWARD_PORT = 5099;
 
 const isMeshError = Schema.is(MeshError);
 
@@ -138,6 +146,12 @@ interface CachedSession {
   readonly expiresAt: number;
 }
 
+const describeCause = (cause: unknown): string => {
+  const inner =
+    typeof cause === "object" && cause !== null && "cause" in cause ? cause.cause : cause;
+  return inner instanceof Error ? inner.message : String(inner);
+};
+
 const OFFLINE: MeshMemberStatus = { online: false, lastSeenAt: null, version: null, error: null };
 
 export class MeshService extends Context.Service<
@@ -150,6 +164,13 @@ export class MeshService extends Context.Service<
     readonly leave: Effect.Effect<MeshState, MeshError>;
     readonly connections: Effect.Effect<MeshConnections, MeshError>;
     readonly forwardConfig: Effect.Effect<MeshForwardConfig, MeshError>;
+    readonly portForwards: Effect.Effect<MeshPortForwards, MeshError>;
+    readonly addPortForward: (
+      input: MeshPortForwardAddInput,
+    ) => Effect.Effect<MeshPortForwards, MeshError>;
+    readonly removePortForward: (
+      input: MeshPortForwardRemoveInput,
+    ) => Effect.Effect<MeshPortForwards, MeshError>;
     readonly peerJoin: (
       request: MeshPeerJoinRequest,
     ) => Effect.Effect<MeshPeerJoinResult, MeshError>;
@@ -196,11 +217,27 @@ const make = Effect.gen(function* () {
         expires_at INTEGER NOT NULL,
         used_at INTEGER
       )`,
+      sql`CREATE TABLE IF NOT EXISTS mesh_port_forwards (
+        port INTEGER PRIMARY KEY,
+        member_id TEXT NOT NULL,
+        service TEXT NOT NULL,
+        added_at TEXT NOT NULL
+      )`,
     ],
     { discard: true },
   ).pipe(Effect.orDie);
 
   const lock = yield* Semaphore.make(1);
+  const portLock = yield* Semaphore.make(1);
+  /** Port forwards listening here now, and why the others are not. */
+  const openPorts = new Map<number, { readonly memberId: string; readonly service: string }>();
+  const portErrors = new Map<number, string>();
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+  const portHost = {
+    platform: yield* HostProcess.Platform,
+    env: yield* HostProcess.Environment,
+    homeDirectory: yield* HostProcess.HomeDirectory,
+  };
   const statuses = yield* Ref.make(new Map<string, MeshMemberStatus>());
   const sessions = new Map<string, CachedSession>();
   const seenNonces = new Map<string, number>();
@@ -313,12 +350,32 @@ const make = Effect.gen(function* () {
     return { ...mesh, self: mesh.self! };
   });
 
+  /** Full, current members reach this machine's adb server and loopback ports; no one else. */
+  const portGate: IrohEndpoint.PortGate = (remoteId, service) =>
+    runPromise(
+      Effect.gen(function* () {
+        const mesh = yield* requireMesh;
+        const now = yield* Clock.currentTimeMillis;
+        const member = mesh.records.get(remoteId);
+        const allowed =
+          isActive(mesh.self, now) && remoteId !== key.id && isActiveFull(member, now);
+        if (!allowed) {
+          yield* Effect.logWarning("Refused a mesh port forward", {
+            member: member?.label ?? remoteId.slice(0, 10),
+            service,
+          });
+        }
+        return allowed;
+      }).pipe(Effect.orElseSucceed(() => false)),
+    ).then((allowed) => (allowed ? resolveMeshPortService(service, portHost) : null));
+
   const ensureListening = Effect.gen(function* () {
     const loopback = yield* Ref.get(target);
     if (Option.isNone(loopback)) {
       return yield* meshError("unreachable", "The server is still starting. Try again shortly.");
     }
     return yield* iroh.listen(loopback.value).pipe(
+      Effect.tap(() => iroh.servePorts(portGate)),
       Effect.map((listening) => listening.ticket),
       Effect.mapError((cause) =>
         meshError("unreachable", `This machine could not listen over iroh: ${cause.message}`),
@@ -442,6 +499,167 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // Port forwards to other members
+
+  const readPortForwards = sql<{
+    readonly port: number;
+    readonly member_id: string;
+    readonly service: string;
+  }>`SELECT port, member_id, service FROM mesh_port_forwards ORDER BY port`.pipe(
+    Effect.catch(storageError),
+  );
+
+  const closePorts = (which: (port: number, memberId: string) => boolean) =>
+    Effect.forEach(
+      [...openPorts.entries()].filter(([port, open]) => which(port, open.memberId)),
+      ([port]) =>
+        iroh.closePortForward(port).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              openPorts.delete(port);
+              portErrors.delete(port);
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+
+  /** Opens the stored forwards whose member is reachable, with its newest address. */
+  const ensurePortForwards = portLock.withPermits(1)(
+    Effect.gen(function* () {
+      const rows = yield* readPortForwards;
+      const { records } = yield* requireMesh;
+      const now = yield* Clock.currentTimeMillis;
+      yield* closePorts((port) => !rows.some((row) => row.port === port));
+      for (const row of rows) {
+        const member = records.get(row.member_id);
+        if (member === undefined || member.removed) {
+          yield* closePorts((port) => port === row.port);
+          yield* sql`DELETE FROM mesh_port_forwards WHERE port = ${row.port}`.pipe(Effect.ignore);
+          continue;
+        }
+        if (!isActive(member, now) || member.ticket === null) {
+          portErrors.set(row.port, `${member.label} cannot be reached over iroh.`);
+          continue;
+        }
+        const opened = yield* iroh
+          .forwardPort(IrohEndpoint.irohRoute(member.ticket), row.service, row.port)
+          .pipe(Effect.result);
+        if (opened._tag === "Success") {
+          openPorts.set(row.port, { memberId: member.id, service: row.service });
+          portErrors.delete(row.port);
+        } else {
+          portErrors.set(
+            row.port,
+            `Port ${row.port} could not listen here: ${describeCause(opened.failure)}`,
+          );
+        }
+      }
+    }),
+  );
+
+  const portForwards: MeshService["Service"]["portForwards"] = Effect.gen(function* () {
+    const rows = yield* readPortForwards;
+    const { records } = yield* readMembers;
+    const forwards = [];
+    for (const row of rows) {
+      const open = openPorts.has(row.port);
+      forwards.push({
+        port: row.port,
+        memberId: row.member_id,
+        memberLabel: records.get(row.member_id)?.label ?? row.member_id.slice(0, 10),
+        service: row.service,
+        open,
+        error: open ? yield* iroh.portForwardError(row.port) : (portErrors.get(row.port) ?? null),
+      });
+    }
+    return { forwards };
+  });
+
+  const addPortForward: MeshService["Service"]["addPortForward"] = Effect.fn(
+    "MeshService.addPortForward",
+  )(function* (input) {
+    const service = normalizeMeshPortService(input.service);
+    if (service === null) {
+      return yield* meshError("invalid_request", "Forward `adb` or a port number, such as 27183.");
+    }
+    const { records } = yield* requireMesh;
+    const now = yield* Clock.currentTimeMillis;
+    const member = records.get(input.member);
+    if (member === undefined || member.id === key.id || !isActive(member, now)) {
+      return yield* meshError("unknown_member", "That machine is not another member of the mesh.");
+    }
+    if (member.kind !== "server" || member.ticket === null) {
+      return yield* meshError("not_allowed", `${member.label} does not serve ports.`);
+    }
+    const ticket = member.ticket;
+    yield* portLock.withPermits(1)(
+      Effect.gen(function* () {
+        const rows = yield* readPortForwards;
+        const same = rows.find(
+          (row) =>
+            row.member_id === member.id &&
+            row.service === service &&
+            (input.port === undefined || row.port === input.port),
+        );
+        if (same !== undefined) return;
+        const candidates =
+          input.port !== undefined
+            ? [input.port]
+            : service === "adb"
+              ? Array.from(
+                  { length: LAST_ADB_FORWARD_PORT - FIRST_ADB_FORWARD_PORT + 1 },
+                  (_, index) => FIRST_ADB_FORWARD_PORT + index,
+                )
+              : [Number(service.slice("port:".length))];
+        let lastError = "no free port";
+        for (const port of candidates) {
+          if (rows.some((row) => row.port === port)) {
+            lastError = `port ${port} already forwards another service`;
+            continue;
+          }
+          const opened = yield* iroh
+            .forwardPort(IrohEndpoint.irohRoute(ticket), service, port)
+            .pipe(Effect.result);
+          if (opened._tag === "Failure") {
+            lastError = describeCause(opened.failure);
+            continue;
+          }
+          const added = yield* DateTime.now;
+          yield* sql`INSERT INTO mesh_port_forwards (port, member_id, service, added_at)
+            VALUES (${port}, ${member.id}, ${service}, ${DateTime.formatIso(added)})`.pipe(
+            Effect.catch(storageError),
+          );
+          openPorts.set(port, { memberId: member.id, service });
+          portErrors.delete(port);
+          yield* Effect.logInfo("Forwarding a port from a mesh member", {
+            member: member.label,
+            service,
+            port,
+          });
+          return;
+        }
+        return yield* meshError("unreachable", `Could not listen here: ${lastError}.`);
+      }),
+    );
+    return yield* portForwards;
+  });
+
+  const removePortForward: MeshService["Service"]["removePortForward"] = Effect.fn(
+    "MeshService.removePortForward",
+  )(function* (input) {
+    yield* portLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* sql`DELETE FROM mesh_port_forwards WHERE port = ${input.port}`.pipe(
+          Effect.catch(storageError),
+        );
+        yield* closePorts((port) => port === input.port);
+        portErrors.delete(input.port);
+      }),
+    );
+    return yield* portForwards;
+  });
+
   /** Leaves the mesh here: forgets every member and what this server holds for them. */
   const clearMesh = Effect.gen(function* () {
     const { records } = yield* readMembers.pipe(
@@ -457,8 +675,14 @@ const make = Effect.gen(function* () {
       yield* iroh.closeForward(record.id);
       yield* revokeMemberSessions(record.id);
     }
+    yield* closePorts(() => true);
     yield* Effect.all(
-      [sql`DELETE FROM mesh_members`, sql`DELETE FROM mesh_meta`, sql`DELETE FROM mesh_invites`],
+      [
+        sql`DELETE FROM mesh_members`,
+        sql`DELETE FROM mesh_meta`,
+        sql`DELETE FROM mesh_invites`,
+        sql`DELETE FROM mesh_port_forwards`,
+      ],
       { discard: true },
     ).pipe(Effect.catch(storageError));
     sessions.clear();
@@ -677,7 +901,10 @@ const make = Effect.gen(function* () {
               .unlink(EnvironmentId.make(record.environmentId))
               .pipe(Effect.ignoreCause({ log: true }));
           }
-          if (record.removed) yield* iroh.closeForward(record.id);
+          if (record.removed) {
+            yield* iroh.closeForward(record.id);
+            yield* closePorts((_, memberId) => memberId === record.id);
+          }
           yield* revokeMemberSessions(record.id);
           sessions.delete(`${record.id}:client`);
           sessions.delete(`${record.id}:sync`);
@@ -694,6 +921,7 @@ const make = Effect.gen(function* () {
     if (self === undefined) return;
     const now = yield* Clock.currentTimeMillis;
     yield* cleanUp(mesh.records, now);
+    yield* ensurePortForwards.pipe(Effect.ignoreCause({ log: true }));
     const records = recordsList(mesh.records);
     yield* Effect.forEach(
       records.filter(
@@ -1199,6 +1427,9 @@ const make = Effect.gen(function* () {
     leave,
     connections,
     forwardConfig,
+    portForwards,
+    addPortForward,
+    removePortForward,
     peerJoin,
     peerSession,
     peerSync,

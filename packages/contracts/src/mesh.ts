@@ -199,6 +199,42 @@ export const MeshForwardConfig = Schema.Struct({
 });
 export type MeshForwardConfig = typeof MeshForwardConfig.Type;
 
+/**
+ * A loopback port here that reaches a named port on another member over
+ * iroh: `adb` (its adb server) or `port:<n>` (a loopback port there).
+ */
+export const MeshPortForward = Schema.Struct({
+  port: Schema.Number,
+  memberId: Schema.String,
+  memberLabel: Schema.String,
+  service: Schema.String,
+  /** Listening here now. */
+  open: Schema.Boolean,
+  /** Why it is not open, or why its last connection failed. */
+  error: Schema.NullOr(Schema.String),
+});
+export type MeshPortForward = typeof MeshPortForward.Type;
+
+export const MeshPortForwards = Schema.Struct({
+  forwards: Schema.Array(MeshPortForward),
+});
+export type MeshPortForwards = typeof MeshPortForwards.Type;
+
+export const MeshPortForwardAddInput = Schema.Struct({
+  /** Member id. */
+  member: Schema.String,
+  /** `adb`, `port:<n>`, or a bare port number. */
+  service: Schema.String,
+  /** The local port; by default the first free from 5038 for adb, else the same port. */
+  port: Schema.optionalKey(Schema.Number),
+});
+export type MeshPortForwardAddInput = typeof MeshPortForwardAddInput.Type;
+
+export const MeshPortForwardRemoveInput = Schema.Struct({
+  port: Schema.Number,
+});
+export type MeshPortForwardRemoveInput = typeof MeshPortForwardRemoveInput.Type;
+
 export const MeshJoiningMember = Schema.Struct({
   id: Schema.String,
   kind: MeshMemberKind,

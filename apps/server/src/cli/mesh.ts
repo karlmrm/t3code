@@ -4,6 +4,8 @@ import {
   MeshAccess,
   MeshAccessDuration,
   type MeshMemberView,
+  type MeshPortForward,
+  type MeshPortForwards,
   type MeshState,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
@@ -281,6 +283,126 @@ const forwardConfigCommand = Command.make("forward-config", { ...projectLocation
   ),
 );
 
+const describePortForward = (forward: MeshPortForward) => {
+  const state = forward.open
+    ? forward.error === null
+      ? "listening"
+      : `listening; last connection failed: ${forward.error}`
+    : `not listening: ${forward.error ?? "waiting for the member"}`;
+  return `127.0.0.1:${forward.port} -> ${forward.memberLabel} ${forward.service}\n  ${state}`;
+};
+
+const formatPortForwards = (result: MeshPortForwards) =>
+  result.forwards.length === 0
+    ? "No port forwards. `t3 mesh port add <member> adb` reaches the phones plugged into that member.\n"
+    : `${result.forwards.map(describePortForward).join("\n")}\n`;
+
+const adbUsage = (port: number) =>
+  [
+    `adb here now reaches the adb server on that member through iroh:`,
+    ``,
+    `  ADB_SERVER_SOCKET=tcp:127.0.0.1:${port} adb devices                (bash)`,
+    `  $env:ADB_SERVER_SOCKET = "tcp:127.0.0.1:${port}"; adb devices    (PowerShell)`,
+    ``,
+    `adb forward and adb reverse open their ports on that member. For scrcpy,`,
+    `forward its port too and keep its tunnel on this side:`,
+    ``,
+    `  t3 mesh port add <member> 27183`,
+    `  ADB_SERVER_SOCKET=tcp:127.0.0.1:${port} scrcpy --force-adb-forward`,
+    ``,
+  ].join("\n");
+
+const portListCommand = Command.make("list", { ...projectLocationFlags, json: jsonFlag }).pipe(
+  Command.withDescription("List the ports here that reach other members over iroh."),
+  Command.withHandler((flags) =>
+    withMesh(flags, (mesh, headers) =>
+      mesh
+        .portForwards({ headers })
+        .pipe(
+          Effect.flatMap((result) =>
+            Console.log(flags.json ? encodeJson(result) : formatPortForwards(result)),
+          ),
+        ),
+    ),
+  ),
+);
+
+const portAddCommand = Command.make("add", {
+  ...projectLocationFlags,
+  member: memberArgument,
+  service: Argument.String("service").pipe(
+    Argument.withDescription(
+      "`adb` for that member's adb server (its phones), or a loopback port number there.",
+    ),
+  ),
+  port: Flag.Int("port").pipe(
+    Flag.withDescription(
+      "Local port to listen on (default: the first free from 5038 for adb, else the same number).",
+    ),
+    Flag.optional,
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Listen on a loopback port here that reaches adb or a port on another member over iroh. Kept across restarts; that member must give this machine full access.",
+  ),
+  Command.withHandler((flags) =>
+    withMesh(flags, (mesh, headers) =>
+      Effect.gen(function* () {
+        const state = yield* mesh.state({ headers });
+        const member = findMember(state, flags.member);
+        if (Option.isNone(member)) {
+          return yield* new MeshMemberNotFoundError({ member: flags.member });
+        }
+        const result = yield* mesh.addPortForward({
+          headers,
+          payload: {
+            member: member.value.id,
+            service: flags.service,
+            ...(Option.isSome(flags.port) ? { port: flags.port.value } : {}),
+          },
+        });
+        if (flags.json) {
+          yield* Console.log(encodeJson(result));
+          return;
+        }
+        yield* Console.log(formatPortForwards(result));
+        const added = result.forwards.find(
+          (forward) =>
+            forward.memberId === member.value.id &&
+            forward.service === "adb" &&
+            flags.service.trim().toLowerCase() === "adb" &&
+            (Option.isNone(flags.port) || forward.port === flags.port.value),
+        );
+        if (added !== undefined) yield* Console.log(adbUsage(added.port));
+      }),
+    ),
+  ),
+);
+
+const portRemoveCommand = Command.make("remove", {
+  ...projectLocationFlags,
+  port: Argument.Int("port").pipe(
+    Argument.withDescription("The local port (`t3 mesh port list`)."),
+  ),
+}).pipe(
+  Command.withDescription("Stop a port forward and forget it."),
+  Command.withHandler((flags) =>
+    withMesh(flags, (mesh, headers) =>
+      mesh
+        .removePortForward({ headers, payload: { port: flags.port } })
+        .pipe(Effect.flatMap((result) => Console.log(formatPortForwards(result)))),
+    ),
+  ),
+);
+
+const portCommand = Command.make("port").pipe(
+  Command.withDescription(
+    "Reach adb or a loopback port on another member over iroh, such as the phones plugged into it.",
+  ),
+  Command.withSubcommands([portAddCommand, portListCommand, portRemoveCommand]),
+);
+
 export const meshCommand = Command.make("mesh").pipe(
   Command.withDescription(
     "Join this machine's T3 Code into a mesh over iroh: every member sees and reaches the others.",
@@ -293,5 +415,6 @@ export const meshCommand = Command.make("mesh").pipe(
     removeCommand,
     leaveCommand,
     forwardConfigCommand,
+    portCommand,
   ]),
 );
